@@ -3952,6 +3952,38 @@ int SCR_Drop(const char* name)
   return rc;
 }
 
+/* determine whether the named checkpoint is still being flushed to the
+ * parallel file system.  Sets *flag to 1 if flushing, 0 otherwise (including
+ * when no dataset by that name is known).  Collective. */
+int SCR_Flushing(const char* name, int* flag)
+{
+  /* manage state transition */
+  if (scr_state != SCR_STATE_IDLE) {
+    scr_state_transition_error(scr_state, "SCR_Flushing()", __FILE__, __LINE__);
+  }
+
+  *flag = 0;
+
+  /* if not enabled, bail with an error */
+  if (! scr_enabled) {
+    return SCR_FAILURE;
+  }
+
+  /* bail out if not initialized -- will get bad results */
+  if (! scr_initialized) {
+    scr_abort(-1, "SCR has not been initialized @ %s:%d", __FILE__, __LINE__);
+    return SCR_FAILURE;
+  }
+
+  /* this is not required, but it helps ensure apps
+   * are calling this as a collective */
+  MPI_Barrier(scr_comm_world);
+
+  *flag = scr_flush_file_is_flushing_name(name);
+
+  return SCR_SUCCESS;
+}
+
 /* delete named checkpoint from cache and parallel file system */
 int SCR_Delete(const char* name)
 {

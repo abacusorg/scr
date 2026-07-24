@@ -80,6 +80,52 @@ int scr_flush_file_is_flushing(int id)
   return is_flushing;
 }
 
+/* checks whether a dataset with the given name is currently being flushed;
+ * scans the flush file for the entry whose SCR_FLUSH_KEY_NAME matches.
+ * Absence of the name, or of a FLUSHING location, both mean "not flushing". */
+int scr_flush_file_is_flushing_name(const char* name)
+{
+  /* assume we are not flushing a dataset by this name */
+  int is_flushing = 0;
+
+  /* only rank 0 tests the file */
+  if (scr_my_rank_world == 0) {
+    /* read flush file into hash */
+    kvtree* hash = kvtree_new();
+    kvtree_read_path(scr_flush_file, hash);
+
+    /* scan every dataset entry for one whose recorded name matches */
+    kvtree* dsets = kvtree_get(hash, SCR_FLUSH_KEY_DATASET);
+    kvtree_elem* elem;
+    for (elem = kvtree_elem_first(dsets);
+         elem != NULL;
+         elem = kvtree_elem_next(elem))
+    {
+      kvtree* dset_hash = kvtree_elem_hash(elem);
+      char* dset_name;
+      if (kvtree_util_get_str(dset_hash, SCR_FLUSH_KEY_NAME, &dset_name) == KVTREE_SUCCESS &&
+          strcmp(dset_name, name) == 0)
+      {
+        /* found the named dataset; is it marked as currently flushing? */
+        kvtree* flushing_hash = kvtree_get_kv(dset_hash, SCR_FLUSH_KEY_LOCATION,
+                                              SCR_FLUSH_KEY_LOCATION_FLUSHING);
+        if (flushing_hash != NULL) {
+          is_flushing = 1;
+        }
+        break;
+      }
+    }
+
+    /* delete the hash */
+    kvtree_delete(&hash);
+  }
+
+  /* broadcast decision from rank 0 */
+  MPI_Bcast(&is_flushing, 1, MPI_INT, 0, scr_comm_world);
+
+  return is_flushing;
+}
+
 /* removes entries in flush file for given dataset id */
 int scr_flush_file_dataset_remove(int id)
 {

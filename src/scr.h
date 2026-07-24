@@ -119,6 +119,9 @@ int SCR_Current(const char* name);
 /* drop named dataset from index */
 int SCR_Drop(const char* name);
 
+/* determine whether the named checkpoint is still flushing to the file system */
+int SCR_Flushing(const char* name, int* flag);
+
 /* delete files for named dataset */
 int SCR_Delete(const char* name);
 

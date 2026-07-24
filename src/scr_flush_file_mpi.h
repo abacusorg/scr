@@ -18,6 +18,9 @@ int scr_flush_file_need_flush(int id);
 /* checks whether the specified dataset id is currently being flushed */
 int scr_flush_file_is_flushing(int id);
 
+/* checks whether a dataset with the given name is currently being flushed */
+int scr_flush_file_is_flushing_name(const char* name);
+
 /* removes entries in flush file for given dataset id */
 int scr_flush_file_dataset_remove(int id);
 
