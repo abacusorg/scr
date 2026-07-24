@@ -111,6 +111,8 @@ Globals
 
 extern char* scr_cntl_base;  /* base directory for control directory */
 extern char* scr_cache_base; /* base directory for cache directory */
+extern char* scr_cache_stash_dir;  /* if set, cache eviction renames data files here
+                                    * (same mount) instead of unlinking them (5.2) */
 
 extern char* scr_cntl_prefix; /* path of control directory (adds to base directory) */
 

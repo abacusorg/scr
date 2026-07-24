@@ -57,6 +57,7 @@ Globals
 */
 
 char* scr_cache_base  = NULL; /* base directory for cache directory */
+char* scr_cache_stash_dir = NULL; /* if set, cache eviction renames data files here (5.2) */
 char* scr_cntl_base   = NULL; /* base directory for control directory */
 char* scr_cntl_prefix = NULL; /* path of control directory (adds to base directory) */
 

@@ -849,6 +849,17 @@ static int scr_get_params()
     scr_dbg(1, "SCR_CACHE_SIZE=%d", scr_cache_size);
   }
 
+  /* 5.2 cache recycle: if set, eviction renames data files here instead of
+   * unlinking them (keeps the tmpfs pages resident for the next checkpoint). */
+  if ((value = scr_param_get("SCR_CACHE_STASH_DIR")) != NULL) {
+    scr_cache_stash_dir = strdup(value);
+    scr_dbg(1, "SCR_CACHE_STASH_DIR=%s", scr_cache_stash_dir);
+    /* Each rank is configured with its OWN per-rank path (Abacus appends rank<NNNNN>),
+     * so this is a per-rank dir on the node-local store.  Abacus already created it;
+     * this mkdir is defensive (harmless if it exists). */
+    scr_mkdir(scr_cache_stash_dir, S_IRWXU);
+  }
+
   /* fill in a hash of group descriptors */
   scr_groupdesc_hash = kvtree_new();
   tmp = (kvtree*) scr_param_get_hash(SCR_CONFIG_KEY_GROUPDESC);

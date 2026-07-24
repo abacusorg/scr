@@ -328,10 +328,32 @@ int scr_cache_delete(scr_cache_index* cindex, int id)
       }
     }
 
-    /* if we're not using bypass, delete data files from cache */
+    /* if we're not using bypass, remove data files from cache */
     if (! bypass) {
-      /* delete the file */
-      scr_file_unlink(file);
+      if (scr_cache_stash_dir != NULL) {
+        /* 5.2 recycle: move the file aside instead of freeing its tmpfs pages.
+         * rename within one mount is metadata-only and atomically replaces any
+         * same-named stash file, so the stash self-bounds to one dataset's data. */
+        spath* bp = spath_from_str(file);
+        spath_basename(bp);                       /* reduce to basename in place */
+        char* base = spath_strdup(bp);
+        spath_delete(&bp);
+
+        spath* sp = spath_from_str(scr_cache_stash_dir);
+        spath_append_str(sp, base);
+        char* stashpath = spath_strdup(sp);
+        spath_delete(&sp);
+
+        if (rename(file, stashpath) != 0) {
+          /* cross-mount (EXDEV) or error: fall back to unlink, no churn benefit */
+          scr_file_unlink(file);
+        }
+        scr_free(&stashpath);
+        scr_free(&base);
+      } else {
+        /* delete the file (unchanged default) */
+        scr_file_unlink(file);
+      }
     }
   }
   
