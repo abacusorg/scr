@@ -3990,6 +3990,17 @@ int SCR_Flushing(const char* name, int* flag)
    * are calling this as a collective */
   MPI_Barrier(scr_comm_world);
 
+  /* Advance any in-flight async flush so its completion is recorded in the
+   * flush file, then answer from the up-to-date file.  scr_flush_async_progall
+   * otherwise runs only inside SCR_Complete_output (scr_complete_output), so an
+   * application that polls flush status while opening no new datasets -- e.g.
+   * app-managed prefix retention that postpones the next checkpoint until an old
+   * one can be retired -- would never observe the current flush complete and
+   * could deadlock.  Collective and matches scr_complete_output's usage. */
+  if (scr_flush_async_in_progress()) {
+    scr_flush_async_progall(scr_cindex);
+  }
+
   *flag = scr_flush_file_is_flushing_name(name);
 
   return SCR_SUCCESS;
