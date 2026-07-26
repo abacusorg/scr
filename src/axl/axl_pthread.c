@@ -346,6 +346,19 @@ static int __axl_pthread_start (int id, int resume)
 
     unsigned int threads = AXL_MIN(cpu_threads, AXL_MIN(file_count, MAX_THREADS));
 
+    /* Optional runtime cap on the copy-thread count.  axl_get_nprocs() reports the
+     * whole node (it ignores CPU affinity), so a flush pins many threads' worth of
+     * memory-bandwidth pressure onto whatever core the caller runs on, starving
+     * bandwidth-bound compute.  AXL_PTHREAD_MAX_THREADS, if set, lowers the count
+     * (it only caps -- file_count still floors it).  Unset => unchanged. */
+    const char* env = getenv("AXL_PTHREAD_MAX_THREADS");
+    if (env != NULL) {
+        int cap = atoi(env);
+        if (cap >= 1 && (unsigned int) cap < threads) {
+            threads = (unsigned int) cap;
+        }
+    }
+
     /* Create the data structure for our threads */
     struct axl_pthread_data* pdata = axl_pthread_create_thread_data(threads);
     if (! pdata) {
