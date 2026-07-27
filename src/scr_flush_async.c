@@ -434,9 +434,11 @@ int scr_flush_async_complete(scr_cache_index* cindex, int id)
   kvtree* dset_hash = kvtree_get_kv_int(scr_flush_async_list, ASYNC_KEY_OUT_DSET, id);
 
   /* wait for transfer to complete */
+  double scr_t0_axl_wait = MPI_Wtime();
   if (scr_axl_wait(id, scr_comm_world) != SCR_SUCCESS) {
     kvtree_util_set_int(dset_hash, ASYNC_KEY_OUT_STATUS, SCR_FAILURE);
   }
+  scr_t_axl_wait += MPI_Wtime() - scr_t0_axl_wait;
 
   /* lookup status of transfer */
   int status = SCR_FAILURE;

@@ -150,6 +150,14 @@ int    scr_need_checkpoint_count = 0;   /* tracks the number of times Need_check
 double scr_time_checkpoint_total = 0.0; /* keeps a running total of the time spent to checkpoint */
 int    scr_time_checkpoint_count = 0;   /* keeps a running count of the number of checkpoints taken */
 
+/* cumulative blocking sub-operation timers, exposed via SCR_Get_timers() */
+double scr_t_axl_wait      = 0.0;
+double scr_t_flush_summary = 0.0;
+double scr_t_flush_index   = 0.0;
+double scr_t_reddesc_apply = 0.0;
+double scr_t_complete_stat = 0.0;
+double scr_t_evict_wait    = 0.0;
+
 char* scr_my_hostname  = NULL; /* hostname of local process */
 int   scr_my_hostid    = MPI_PROC_NULL; /* unique identifier of the node on which this rank resides */
 int   scr_my_rank_host = MPI_PROC_NULL; /* my rank within the node */

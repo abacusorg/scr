@@ -205,6 +205,16 @@ extern int    scr_need_checkpoint_count; /* tracks the number of times Need_chec
 extern double scr_time_checkpoint_total; /* keeps a running total of the time spent to checkpoint */
 extern int    scr_time_checkpoint_count; /* keeps a running count of the number of checkpoints taken */
 
+/* cumulative wall-time (MPI_Wtime) spent in individual blocking sub-operations on
+ * the main thread, for app-side timing breakdown via SCR_Get_timers().  Monotonic;
+ * never reset inside SCR -- the caller snapshots and diffs across an interval. */
+extern double scr_t_axl_wait;      /* AXL_Wait_comm join at end of an async flush */
+extern double scr_t_flush_summary; /* summary.scr write + scr_alltrue during flush complete */
+extern double scr_t_flush_index;   /* index.scr read-modify-write during flush complete (rank 0) */
+extern double scr_t_reddesc_apply; /* redundancy/XOR encode in complete_output */
+extern double scr_t_complete_stat; /* per-file stat() metadata loop in complete_output */
+extern double scr_t_evict_wait;    /* wait on a prior async flush during cache eviction in start_output */
+
 extern char* scr_my_hostname; /* hostname of local process */
 extern int   scr_my_hostid;   /* unique id of the node on which this rank resides */
 extern int   scr_my_rank_host; /* my rank within the node */

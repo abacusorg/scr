@@ -122,6 +122,20 @@ int SCR_Drop(const char* name);
 /* determine whether the named checkpoint is still flushing to the file system */
 int SCR_Flushing(const char* name, int* flag);
 
+/* cumulative wall-clock (seconds) spent in individual blocking sub-operations on
+ * the main thread since job start, for application-side timing breakdown.  Values
+ * are monotonic totals; the caller snapshots and diffs across an interval to get
+ * per-interval costs.  A pure local read: no MPI, no state-machine transition. */
+typedef struct {
+    double axl_wait;      /* AXL_Wait_comm join at the end of an async flush */
+    double flush_summary; /* summary.scr write + collective check during flush complete */
+    double flush_index;   /* index.scr read-modify-write during flush complete (rank 0) */
+    double reddesc_apply; /* redundancy/XOR encode in Complete_output */
+    double complete_stat; /* per-file stat() metadata loop in Complete_output */
+    double evict_wait;    /* wait on a prior async flush during cache eviction in Start_output */
+} SCR_timers;
+int SCR_Get_timers(SCR_timers* timers);
+
 /* delete files for named dataset */
 int SCR_Delete(const char* name);
 

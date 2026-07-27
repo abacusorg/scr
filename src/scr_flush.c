@@ -402,13 +402,16 @@ int scr_flush_complete(const scr_cache_index* cindex, int id, kvtree* file_list)
   scr_dataset* dataset = kvtree_get(file_list, SCR_KEY_DATASET);
 
   /* write summary file */
+  double scr_t0_summary = MPI_Wtime();
   if (scr_flush_summary(dataset, file_list, complete) != SCR_SUCCESS) {
     flushed = SCR_FAILURE;
   }
+  scr_t_flush_summary += MPI_Wtime() - scr_t0_summary;
 
   /* update index file */
   if (scr_my_rank_world == 0) {
     if (flushed == SCR_SUCCESS) {
+      double scr_t0_index = MPI_Wtime();
       /* read the index file */
       kvtree* index_hash = kvtree_new();
       scr_index_read(scr_prefix_path, index_hash);
@@ -444,6 +447,7 @@ int scr_flush_complete(const scr_cache_index* cindex, int id, kvtree* file_list)
       /* write the index file and delete the hash */
       scr_index_write(scr_prefix_path, index_hash);
       kvtree_delete(&index_hash);
+      scr_t_flush_index += MPI_Wtime() - scr_t0_index;
     }
   }
 

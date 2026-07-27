@@ -1570,10 +1570,13 @@ static int scr_start_output(const char* name, int flags)
     scr_cache_delete(scr_cindex, flushing);
     nckpts_base--;
 
-    /* report time spent waiting on async flush to complete
-     * it's useful to separate this time from SCR overhead */
+    /* accumulate time spent blocked here (collective on all ranks) for the
+     * app-side timing breakdown; separate from generic SCR overhead */
+    double scr_time_wait_end = MPI_Wtime();
+    scr_t_evict_wait += scr_time_wait_end - scr_time_wait_start;
+
+    /* report time spent waiting on async flush to complete */
     if (scr_my_rank_world == 0) {
-      double scr_time_wait_end = MPI_Wtime();
       double wait_time = scr_time_wait_end - scr_time_wait_start;
       scr_dbg(1, "wait async flush: %f secs", wait_time);
     }
@@ -1779,6 +1782,7 @@ static int scr_complete_output(int valid)
   int files_valid = valid;
   unsigned long my_counts[3] = {0, 0, 0};
   kvtree_elem* elem;
+  double scr_t0_stat = MPI_Wtime();
   for (elem = scr_filemap_first_file(scr_map);
        elem != NULL;
        elem = kvtree_elem_next(elem))
@@ -1824,6 +1828,7 @@ static int scr_complete_output(int valid)
     scr_filemap_set_meta(scr_map, file, meta);
     scr_meta_delete(&meta);
   }
+  scr_t_complete_stat += MPI_Wtime() - scr_t0_stat;
 
   /* we execute a sum as a logical allreduce to determine whether everyone is valid
    * we interpret the result to be true only if the sum adds up to the number of processes */
@@ -1909,7 +1914,9 @@ static int scr_complete_output(int valid)
 
   /* apply redundancy scheme if we're still valid */
   if (rc == SCR_SUCCESS) {
+    double scr_t0_reddesc = MPI_Wtime();
     rc = scr_reddesc_apply(scr_map, scr_rd, scr_dataset_id);
+    scr_t_reddesc_apply += MPI_Wtime() - scr_t0_reddesc;
   }
 
   /* record the cost of the output and log its completion */
@@ -4003,6 +4010,23 @@ int SCR_Flushing(const char* name, int* flag)
 
   *flag = scr_flush_file_is_flushing_name(name);
 
+  return SCR_SUCCESS;
+}
+
+/* copy out cumulative blocking sub-operation timers (seconds since job start).
+ * A pure local read of file-static accumulators: no MPI, no state transition, so
+ * it is safe to call at any point and cannot perturb the timed collective calls. */
+int SCR_Get_timers(SCR_timers* timers)
+{
+  if (timers == NULL) {
+    return SCR_FAILURE;
+  }
+  timers->axl_wait      = scr_t_axl_wait;
+  timers->flush_summary = scr_t_flush_summary;
+  timers->flush_index   = scr_t_flush_index;
+  timers->reddesc_apply = scr_t_reddesc_apply;
+  timers->complete_stat = scr_t_complete_stat;
+  timers->evict_wait    = scr_t_evict_wait;
   return SCR_SUCCESS;
 }
 
