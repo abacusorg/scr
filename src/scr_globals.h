@@ -208,7 +208,9 @@ extern int    scr_time_checkpoint_count; /* keeps a running count of the number 
 /* cumulative wall-time (MPI_Wtime) spent in individual blocking sub-operations on
  * the main thread, for app-side timing breakdown via SCR_Get_timers().  Monotonic;
  * never reset inside SCR -- the caller snapshots and diffs across an interval. */
-extern double scr_t_axl_wait;      /* AXL_Wait_comm join at end of an async flush */
+extern double scr_t_axl_wait;      /* AXL_Wait_comm join at end of an async flush (total) */
+extern double scr_t_axl_wait_local;/* ...of which: this rank's own copy-thread join (AXL_Wait) */
+extern double scr_t_axl_wait_coll; /* ...of which: cross-rank agreement (idle waiting for a slower peer) */
 extern double scr_t_flush_summary; /* summary.scr write + scr_alltrue during flush complete */
 extern double scr_t_flush_index;   /* index.scr read-modify-write during flush complete (rank 0) */
 extern double scr_t_reddesc_apply; /* redundancy/XOR encode in complete_output */

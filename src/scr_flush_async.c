@@ -124,8 +124,23 @@ static int scr_axl_wait(int dset_id, MPI_Comm comm)
   int axl_id;
   kvtree* dset_hash = kvtree_get_kv_int(scr_flush_async_list, ASYNC_KEY_OUT_DSET, dset_id);
   if (kvtree_util_get_int(dset_hash, ASYNC_KEY_OUT_AXL, &axl_id) == KVTREE_SUCCESS) {
-    /* test whether transfer is still active */
-    if (AXL_Wait_comm(axl_id, comm) != AXL_SUCCESS) {
+    /* Wait for the transfer to finish.  This is exactly AXL_Wait_comm (a local
+     * AXL_Wait followed by an MPI_LAND agreement), unrolled so we can time the
+     * two halves separately for diagnostics: axl_wait_local is how long THIS
+     * rank's own copy-thread join took (i.e. its own copy was still draining),
+     * while axl_wait_coll is how long this rank then idled in the collective
+     * agreement waiting for a slower peer.  Reading the per-rank split across
+     * ranks (all in .time.bin) distinguishes "finalize fired ahead of the copy
+     * everywhere" (uniform local) from "one laggard node" (skewed local). */
+    double scr_t0 = MPI_Wtime();
+    int wrc = AXL_Wait(axl_id);                 /* local: join this rank's copy threads */
+    double scr_t1 = MPI_Wtime();
+    int mine = (wrc == AXL_SUCCESS), all_ok = 0;
+    MPI_Allreduce(&mine, &all_ok, 1, MPI_INT, MPI_LAND, comm);   /* agreement (as AXL_Wait_comm) */
+    double scr_t2 = MPI_Wtime();
+    scr_t_axl_wait_local += scr_t1 - scr_t0;
+    scr_t_axl_wait_coll  += scr_t2 - scr_t1;
+    if (! all_ok) {
       scr_err("Failed to wait on AXL transfer handle %d @ %s:%d",
         axl_id, __FILE__, __LINE__
       );

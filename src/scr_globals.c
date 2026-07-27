@@ -152,6 +152,8 @@ int    scr_time_checkpoint_count = 0;   /* keeps a running count of the number o
 
 /* cumulative blocking sub-operation timers, exposed via SCR_Get_timers() */
 double scr_t_axl_wait      = 0.0;
+double scr_t_axl_wait_local = 0.0;
+double scr_t_axl_wait_coll  = 0.0;
 double scr_t_flush_summary = 0.0;
 double scr_t_flush_index   = 0.0;
 double scr_t_reddesc_apply = 0.0;

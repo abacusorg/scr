@@ -4021,7 +4021,9 @@ int SCR_Get_timers(SCR_timers* timers)
   if (timers == NULL) {
     return SCR_FAILURE;
   }
-  timers->axl_wait      = scr_t_axl_wait;
+  timers->axl_wait       = scr_t_axl_wait;
+  timers->axl_wait_local = scr_t_axl_wait_local;
+  timers->axl_wait_coll  = scr_t_axl_wait_coll;
   timers->flush_summary = scr_t_flush_summary;
   timers->flush_index   = scr_t_flush_index;
   timers->reddesc_apply = scr_t_reddesc_apply;

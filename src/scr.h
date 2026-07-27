@@ -130,7 +130,9 @@ int SCR_Flushing(const char* name, int* flag);
  * are monotonic totals; the caller snapshots and diffs across an interval to get
  * per-interval costs.  A pure local read: no MPI, no state-machine transition. */
 typedef struct {
-    double axl_wait;      /* AXL_Wait_comm join at the end of an async flush */
+    double axl_wait;       /* AXL_Wait_comm join at the end of an async flush (total) */
+    double axl_wait_local; /* ...of which: this rank's own copy-thread join */
+    double axl_wait_coll;  /* ...of which: cross-rank agreement (idle for a slower peer) */
     double flush_summary; /* summary.scr write + collective check during flush complete */
     double flush_index;   /* index.scr read-modify-write during flush complete (rank 0) */
     double reddesc_apply; /* redundancy/XOR encode in Complete_output */
