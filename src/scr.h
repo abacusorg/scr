@@ -9,6 +9,9 @@
  * Please also read this file: LICENSE.TXT.
 */
 
+#ifndef SCR_H
+#define SCR_H
+
 /* enable C++ codes to include this header directly */
 #ifdef __cplusplus
 extern "C" {
@@ -153,3 +156,5 @@ int SCR_Should_exit(int* flag);
 #ifdef __cplusplus
 } /* extern "C" */
 #endif
+
+#endif /* SCR_H */
