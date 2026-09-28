@@ -983,6 +983,42 @@ static int scr_get_params()
     scr_dbg(1, "SCR_CACHE_BYPASS=%d", scr_cache_bypass);
   }
 
+  /* scope of the cross-rank scan that detects files registered by more than one proc.
+   * Narrowing it is only ever honored where files cannot be shared; scr_assign_ownership
+   * forces WORLD whenever they can be (bypass mode, or a store every proc can reach). */
+  value = scr_param_get("SCR_ASSIGN_OWNERSHIP");
+  if (value == NULL) {
+    value = SCR_ASSIGN_OWNERSHIP;
+  }
+  if (strcasecmp(value, "world") == 0) {
+    scr_assign_ownership_scope = SCR_ASSIGN_OWNERSHIP_WORLD;
+  } else if (strcasecmp(value, "store") == 0 || strcasecmp(value, "node") == 0) {
+    /* NODE is accepted as an alias: the store's group defaults to the node, but it
+     * follows SCR_GROUP and need not be the node, so STORE is the honest name. */
+    scr_assign_ownership_scope = SCR_ASSIGN_OWNERSHIP_STORE;
+  } else if (strcasecmp(value, "none") == 0) {
+    scr_assign_ownership_scope = SCR_ASSIGN_OWNERSHIP_NONE;
+  } else {
+    /* Deliberately stricter than the SCR_COPY_TYPE ladder above, which falls back
+     * silently: this setting governs whether a collective runs at all, so a typo would
+     * quietly restore the cost the caller was trying to avoid with nothing in the log. */
+    scr_abort(-1, "SCR_ASSIGN_OWNERSHIP=%s is not one of WORLD, STORE, or NONE @ %s:%d",
+      value, __FILE__, __LINE__
+    );
+  }
+  /* The value selects between communicators and between running a collective and not, so
+   * it must be rank-uniform.  SCR_Config() bcasts and verifies its strings, but
+   * scr_param_get() consults the environment first and that path has no consistency
+   * check; ranks that disagreed would deadlock, or meet in one communicator with
+   * mismatched counts.  Rank 0's value wins. */
+  MPI_Bcast(&scr_assign_ownership_scope, 1, MPI_INT, 0, scr_comm_world);
+  if (scr_my_rank_world == 0) {
+    const char* scope_name =
+      (scr_assign_ownership_scope == SCR_ASSIGN_OWNERSHIP_NONE)  ? "NONE"  :
+      (scr_assign_ownership_scope == SCR_ASSIGN_OWNERSHIP_STORE) ? "STORE" : "WORLD";
+    scr_dbg(1, "SCR_ASSIGN_OWNERSHIP=%s", scope_name);
+  }
+
   /* if job has fewer than SCR_HALT_SECONDS remaining after completing a checkpoint,
    * halt it */
   if ((value = scr_param_get("SCR_HALT_SECONDS")) != NULL) {
@@ -1631,6 +1667,51 @@ static int scr_assign_ownership(scr_filemap* map, const scr_reddesc* rd)
 {
   int rc = SCR_SUCCESS;
 
+  /* Determine whether shared files are allowed: we can use shared files if in bypass
+   * mode or if all procs in the job access the same storage.  Hoisted above the scan,
+   * because it decides both whether the scan may be narrowed and which communicator it
+   * runs on. */
+  scr_storedesc* store = scr_reddesc_get_store(rd);
+  if (store == NULL) {
+    scr_abort(-1, "Failed to get store descriptor for redundancy descriptor @ %s:%d",
+      __FILE__, __LINE__
+    );
+  }
+  int shared = (rd->bypass || store->ranks == scr_ranks_world);
+
+  /* Where files may legitimately be shared the scan is load-bearing rather than merely
+   * diagnostic -- it is what keeps the file count, the rank2file map, and the flush from
+   * seeing one destination under several ranks -- so SCR_ASSIGN_OWNERSHIP is honored only
+   * where they cannot be.  rd->bypass derives from SCR_CACHE_BYPASS, which is readable
+   * from the environment and so is not guaranteed rank-uniform; reduce it with a logical
+   * OR, failing safe toward WORLD, before it is allowed to choose a communicator.  Done
+   * only when the scope is narrowed, so the default path adds no collective. */
+  int scope = scr_assign_ownership_scope;
+  if (scope != SCR_ASSIGN_OWNERSHIP_WORLD) {
+    int shared_any;
+    MPI_Allreduce(&shared, &shared_any, 1, MPI_INT, MPI_LOR, scr_comm_world);
+    if (shared_any) {
+      scope = SCR_ASSIGN_OWNERSHIP_WORLD;
+    }
+  }
+
+  /* Nothing to detect: the caller guarantees that each proc's destination paths are its
+   * own, so the scan could only report singleton groups and no filemap entry would be
+   * dropped.  Return before the allocations below -- group_ranks[] and group_rank[] are
+   * read further down and are never written on this path.  Success rather than failure:
+   * rc is only ever set to SCR_FAILURE afterwards, so failing here would skip the
+   * redundancy apply and discard the dataset. */
+  if (scope == SCR_ASSIGN_OWNERSHIP_NONE) {
+    return SCR_SUCCESS;
+  }
+
+  double time_start = MPI_Wtime();
+
+  /* scan across every proc that could collide: all of them, or just those that share
+   * this proc's storage */
+  MPI_Comm scan_comm =
+    (scope == SCR_ASSIGN_OWNERSHIP_STORE) ? store->comm : scr_comm_world;
+
   /* allocate buffers to hold index info for each file */
   int count = scr_filemap_num_files(map);
   char**    mapfiles    = (char**)    SCR_MALLOC(sizeof(char*)    * count);
@@ -1680,26 +1761,25 @@ static int scr_assign_ownership(scr_filemap* map, const scr_reddesc* rd)
     i++;
   }
 
-  /* identify the set of unique files across all ranks */
+  /* identify the set of unique files across the scanning communicator */
   uint64_t groups;
   int dtcmp_rc = DTCMP_Rankv_strings(
     count, (const char **) filelist, &groups, group_id, group_ranks, group_rank,
-    DTCMP_FLAG_NONE, scr_comm_world
+    DTCMP_FLAG_NONE, scan_comm
   );
+  /* On failure the group arrays are left uninitialized, so the ownership loop below must
+   * not read them.  Bound that loop separately rather than zeroing count, which the frees
+   * at the end still need; the collectives after the loop run on every proc either way. */
+  int nscan = count;
   if (dtcmp_rc != DTCMP_SUCCESS) {
     rc = SCR_FAILURE;
+    nscan = 0;
   }
-
-  /* determine whether shared files are allowed,
-   * we can use shared files if in bypass mode or if
-   * all procs in the job access the same storage */
-  scr_storedesc* store = scr_reddesc_get_store(rd);
-  int shared = (rd->bypass || store->ranks == scr_ranks_world);
 
   /* keep rank 0 for each file as its owner, remove any entry from the filemap
    * for which we are not rank 0 */
   int multiple_owner = 0;
-  for (i = 0; i < count; i++) {
+  for (i = 0; i < nscan; i++) {
     /* check whether this file exists on multiple ranks */
     if (group_ranks[i] > 1) {
       /* found the same file on more than one rank */
@@ -1743,7 +1823,13 @@ static int scr_assign_ownership(scr_filemap* map, const scr_reddesc* rd)
   scr_free(&mapfiles);
   scr_free(&filelist);
 
-  /* determine whether all leaders successfully created their directories */
+  if (scr_my_rank_world == 0) {
+    scr_dbg(1, "scr_assign_ownership: %f secs, %d files, %s scope",
+      MPI_Wtime() - time_start, count,
+      (scope == SCR_ASSIGN_OWNERSHIP_STORE) ? "STORE" : "WORLD"
+    );
+  }
+
   return rc;
 }
 

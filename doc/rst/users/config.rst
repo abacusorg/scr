@@ -593,6 +593,19 @@ The table in this section specifies the full set of SCR configuration parameters
        parallel file system, bypassing the cache.  Even in bypass mode, internal
        SCR metadata corresponding to the dataset is stored in cache.
        Set to 0 to direct SCR to store datasets in cache.
+   * - :code:`SCR_ASSIGN_OWNERSHIP`
+     - :code:`WORLD`
+     - Scope of the cross-rank scan that detects files registered by more than one
+       process.  Set to one of: :code:`WORLD`, :code:`STORE`, or :code:`NONE`.
+       Narrowing the scope has no effect where files may genuinely be shared
+       (bypass mode, or a cache every process can reach); there the scan always
+       spans all processes, since it is then required for correctness rather than
+       merely diagnostic.  Elsewhere the scan only reports an error, so
+       :code:`STORE` limits it to processes sharing a store (the group named by
+       :code:`SCR_GROUP`, by default the node), which is where files cached in a
+       flat per-node directory can collide, and :code:`NONE` disables it.  With
+       :code:`NONE` the application is responsible for guaranteeing that routed
+       destination paths are unique across processes.
    * - :code:`SCR_CACHE_PURGE`
      - 0
      - Whether to delete all datasets from cache during :code:`SCR_Init`.

@@ -107,6 +107,8 @@ char* scr_group       = NULL;             /* name of process group likely to fai
 int scr_set_size      = SCR_SET_SIZE;     /* specify number of tasks in redundancy set */
 int scr_set_failures  = SCR_SET_FAILURES; /* specify number of failures to tolerate per set */
 int scr_cache_bypass  = SCR_CACHE_BYPASS; /* default bypass, whether to directly read/write parallel file system */
+int scr_assign_ownership_scope = SCR_ASSIGN_OWNERSHIP_WORLD; /* scope of the cross-rank scan for
+                                           * files registered by more than one proc */
 
 int scr_mpi_buf_size  = SCR_MPI_BUF_SIZE;     /* set MPI buffer size to chunk file transfer */
 size_t scr_file_buf_size = SCR_FILE_BUF_SIZE; /* set buffer size to chunk file copies to/from parallel file system */

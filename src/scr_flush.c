@@ -153,18 +153,32 @@ int scr_flush_create_dirs(
     leader[i] = 0;
   }
 
-  /* with DTCMP we identify a single process to create each directory */
+  /* With DTCMP we identify a single process to create each directory.  This election is
+   * an optimization rather than a correctness requirement: scr_mkdir treats EEXIST as
+   * success, so all it buys is sparing the file system N concurrent mkdirs of one path.
+   * SCR_ASSIGN_OWNERSHIP=NONE is the application asserting that its destination paths are
+   * per-proc, and then every proc is already the sole leader of its own directories and
+   * the election is a global sort that can only return singletons.  STORE is treated the
+   * same way here: the communicator is the caller's, so a store-scoped election would
+   * pick one leader per store rather than one per directory, which is a different and
+   * wrong answer. */
+  if (scr_assign_ownership_scope == SCR_ASSIGN_OWNERSHIP_WORLD) {
+    /* identify the set of unique directories */
+    uint64_t groups;
+    DTCMP_Rankv_strings(
+      count, dirs, &groups, group_id, group_ranks, group_rank,
+      DTCMP_FLAG_NONE, comm
+    );
 
-  /* identify the set of unique directories */
-  uint64_t groups;
-  DTCMP_Rankv_strings(
-    count, dirs, &groups, group_id, group_ranks, group_rank,
-    DTCMP_FLAG_NONE, comm
-  );
-
-  /* select leader for each directory */
-  for (i = 0; i < count; i++) {
-    if (group_rank[i] == 0) {
+    /* select leader for each directory */
+    for (i = 0; i < count; i++) {
+      if (group_rank[i] == 0) {
+        leader[i] = 1;
+      }
+    }
+  } else {
+    /* no election: each proc creates the directories for its own files */
+    for (i = 0; i < count; i++) {
       leader[i] = 1;
     }
   }

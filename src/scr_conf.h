@@ -32,6 +32,12 @@
 #define SCR_GROUP_NODE  "NODE"
 #define SCR_GROUP_WORLD "WORLD"
 
+/* scope of the cross-rank duplicate-file scan in scr_assign_ownership(),
+ * selected by SCR_ASSIGN_OWNERSHIP */
+#define SCR_ASSIGN_OWNERSHIP_NONE  (0)  /* skip the scan entirely */
+#define SCR_ASSIGN_OWNERSHIP_STORE (1)  /* scan within the store's group communicator */
+#define SCR_ASSIGN_OWNERSHIP_WORLD (2)  /* scan across all procs (default) */
+
 /* whether SCR is enabled by default */
 #ifndef SCR_ENABLE
 #define SCR_ENABLE (1)
@@ -135,6 +141,11 @@
 /* default cache bypass setting */
 #ifndef SCR_CACHE_BYPASS
 #define SCR_CACHE_BYPASS (1)
+#endif
+
+/* default scope of the cross-rank scan for files registered by more than one proc */
+#ifndef SCR_ASSIGN_OWNERSHIP
+#define SCR_ASSIGN_OWNERSHIP ("WORLD")
 #endif
 
 /* =========================================================================
