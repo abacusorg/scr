@@ -157,8 +157,8 @@ int scr_flush_create_dirs(
    * an optimization rather than a correctness requirement: scr_mkdir treats EEXIST as
    * success, so all it buys is sparing the file system N concurrent mkdirs of one path.
    * SCR_ASSIGN_OWNERSHIP=NONE is the application asserting that its destination paths are
-   * per-proc, and then every proc is already the sole leader of its own directories and
-   * the election is a global sort that can only return singletons.  STORE is treated the
+   * per-proc, so no other proc shares its directories and a local dedup does the
+   * election's work without the global sort.  STORE is treated the
    * same way here: the communicator is the caller's, so a store-scoped election would
    * pick one leader per store rather than one per directory, which is a different and
    * wrong answer. */
@@ -177,9 +177,12 @@ int scr_flush_create_dirs(
       }
     }
   } else {
-    /* no election: each proc creates the directories for its own files */
+    /* one mkdir per run of files sharing a dir, not one per file; a repeat that is
+     * not adjacent costs only an extra EEXIST */
     for (i = 0; i < count; i++) {
-      leader[i] = 1;
+      if (i == 0 || strcmp(dirs[i], dirs[i - 1]) != 0) {
+        leader[i] = 1;
+      }
     }
   }
 
