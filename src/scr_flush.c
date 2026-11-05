@@ -16,6 +16,7 @@
 #include "kvtree_util.h"
 #include "dtcmp.h"
 #include "scr_flush_nompi.h"
+#include "axl.h"
 
 /*
 =========================================
@@ -199,7 +200,12 @@ int scr_flush_create_dirs(
 
     /* if we're the leader, create directory */
     if (leader[i]) {
-      if (scr_mkdir(dir, mode_dir) != SCR_SUCCESS) {
+      /* a container registered with AXL has no mount to make the directory through */
+      int rc = AXL_DFS_Mkdir(dir, mode_dir);
+      if (rc == AXL_DFS_UNREGISTERED) {
+        rc = (scr_mkdir(dir, mode_dir) == SCR_SUCCESS) ? AXL_SUCCESS : -1;
+      }
+      if (rc != AXL_SUCCESS) {
         success = 0;
       }
     }

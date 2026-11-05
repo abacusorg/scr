@@ -5,7 +5,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -16,65 +15,12 @@
 #include "axl_internal.h"
 #include "axl_dfs.h"
 
-/* The dfuse ioctl protocol, from DAOS src/include/dfuse_ioctl.h (version 7, DAOS 2.6),
- * which daos-devel does not install.  dfuse puts its version in every reply, and a
- * mismatch sends the file to POSIX. */
-#define AXL_DFUSE_IOCTL_TYPE        0xA3
-#define AXL_DFUSE_IOCTL_VERSION     7
-#define AXL_DFUSE_IOCTL_REPLY_CORE  0xC1
-#define AXL_DFUSE_IOCTL_REPLY_POH   0xC3
-#define AXL_DFUSE_IOCTL_REPLY_COH   0xC4
-#define AXL_DFUSE_IOCTL_REPLY_DOH   0xC5
-#define AXL_DFUSE_IOCTL_REPLY_DOOH  0xC6
-#define AXL_DFUSE_IOCTL_REPLY_SIZE  0xC7
-#define AXL_DFUSE_IOCTL_REPLY_DSIZE 0xC8
-#define AXL_DFUSE_IOCTL_REPLY_PFILE 0xC9
-
-struct axl_dfuse_il_reply {
-    int           fir_version;
-    daos_obj_id_t fir_oid;
-    uuid_t        fir_pool;
-    uuid_t        fir_cont;
-    uint64_t      fir_flags;
-};
-
-/* sizes of the pool, container and dfs global handles */
-struct axl_dfuse_hs_reply {
-    int    fsr_version;
-    size_t fsr_pool_size;
-    size_t fsr_cont_size;
-    size_t fsr_dfs_size;
-};
-
-/* size of the file object's global handle */
-struct axl_dfuse_hsd_reply {
-    int    fsr_version;
-    size_t fsr_dobj_size;
-};
-
-#define AXL_DFUSE_IOCTL_IL \
-    _IOR(AXL_DFUSE_IOCTL_TYPE, AXL_DFUSE_IOCTL_REPLY_CORE, struct axl_dfuse_il_reply)
-#define AXL_DFUSE_IOCTL_IL_SIZE \
-    _IOR(AXL_DFUSE_IOCTL_TYPE, AXL_DFUSE_IOCTL_REPLY_SIZE, struct axl_dfuse_hs_reply)
-#define AXL_DFUSE_IOCTL_IL_DSIZE \
-    _IOR(AXL_DFUSE_IOCTL_TYPE, AXL_DFUSE_IOCTL_REPLY_DSIZE, struct axl_dfuse_hsd_reply)
-
-/* An ioctl's argument size has 14 bits; dfuse sends a bigger pool handle through a file */
-#define AXL_DFUSE_IOCTL_MAX (16 * 1024)
-
 /* why a file went through POSIX when no errno says it */
-#define AXL_DFS_NO_EQ (-1)
+#define AXL_DFS_NO_EQ  (-1)
+/* no registered container holds its directory: a plain POSIX destination */
+#define AXL_DFS_PLAIN  (-2)
 
-/* DAOS's own calls return -DER_* codes, which have no public errno mapping */
-static int axl_dfs_der(const char* what, int der)
-{
-    AXL_ERR("%s failed: DER %d", what, der);
-    return EIO;
-}
-
-/* ---------------------------------------------------------------------------------------
- * The DAOS client.  daos_init and daos_fini are reference counted, so this reference
- * coexists with pil4dfs's. */
+/* daos_init and daos_fini are reference counted, so this reference coexists with pil4dfs's */
 
 static pthread_mutex_t axl_dfs_init_lock = PTHREAD_MUTEX_INITIALIZER;
 static int axl_dfs_inited = 0;
@@ -112,241 +58,295 @@ void axl_dfs_finalize(void)
     pthread_mutex_unlock(&axl_dfs_init_lock);
 }
 
-/* ---------------------------------------------------------------------------------------
- * Handles borrowed from dfuse.  Every checkpoint container has its own dfuse, so each
- * container brings its own pool handle too. */
-
-struct axl_dfs_cont {
-    struct axl_dfs_cont* next;
-    uuid_t uuid;
-    daos_handle_t poh;
-    daos_handle_t coh;
+struct axl_dfs_dir {
+    struct axl_dfs_dir* next;
+    char* path;
+    int why;            /* 0, or why its files go through POSIX */
     dfs_t* dfs;
+    dfs_obj_t* obj;
 };
 
 struct axl_dfs_xfer {
     pthread_mutex_t lock;
-    struct axl_dfs_cont* conts;
+    struct axl_dfs_dir* dirs;
+    /* read once on the main thread: axl_getmode reads the umask by setting it */
+    mode_t mode;
 
     unsigned long files_dfs;
     unsigned long long bytes_dfs;
-    unsigned long files_posix;
-    int posix_reason; /* errno that sent the first file to POSIX, or AXL_DFS_NO_EQ */
+    unsigned long files_posix;    /* through POSIX though their container is registered */
+    int posix_reason;             /* why the first of those did */
+    unsigned long files_plain;    /* under no registered container */
 };
 
-/* Imported handles are local copies, so releasing them sends no RPC and leaves dfuse's
- * own handles open. */
-static void axl_dfs_cont_release(struct axl_dfs_cont* c)
+/* Containers registered by AXL_DFS_Register */
+struct axl_dfs_reg {
+    struct axl_dfs_reg* next;
+    char* path;
+    char* cont_path;
+    dfs_t* dfs;
+};
+
+static pthread_mutex_t axl_dfs_reg_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct axl_dfs_reg* axl_dfs_regs = NULL;
+
+/* `p` without repeated or trailing slashes or "." components; the caller frees it */
+static char* axl_dfs_norm(const char* p)
 {
-    int rc;
-    if (c->dfs != NULL && (rc = dfs_umount(c->dfs)) != 0) {
-        AXL_ERR("dfs_umount failed: %s", strerror(rc));
+    char* out = malloc(strlen(p) + 2);
+    if (out == NULL) {
+        return NULL;
     }
-    if (daos_handle_is_valid(c->coh) && (rc = daos_cont_close(c->coh, NULL)) != 0) {
-        AXL_ERR("daos_cont_close failed: DER %d", rc);
+    size_t o = 0;
+    const char* s = p;
+    while (*s != '\0') {
+        while (*s == '/') {
+            s++;
+        }
+        const char* e = s;
+        while (*e != '\0' && *e != '/') {
+            e++;
+        }
+        size_t len = (size_t) (e - s);
+        if (len > 0 && !(len == 1 && s[0] == '.')) {
+            if (o > 0 || p[0] == '/') {
+                out[o++] = '/';
+            }
+            memcpy(out + o, s, len);
+            o += len;
+        }
+        s = e;
     }
-    if (daos_handle_is_valid(c->poh) && (rc = daos_pool_disconnect(c->poh, NULL)) != 0) {
-        AXL_ERR("daos_pool_disconnect failed: DER %d", rc);
+    if (o == 0) {
+        out[o++] = (p[0] == '/') ? '/' : '.';
     }
-    c->dfs = NULL;
-    c->coh = DAOS_HDL_INVAL;
-    c->poh = DAOS_HDL_INVAL;
+    out[o] = '\0';
+    return out;
 }
 
-/* Fetch a global handle of `size` bytes with reply number `nr`; the caller frees it */
-static int axl_dfs_fetch(int fd, int nr, size_t size, d_iov_t* iov)
+/* The registered container holding `path`, and `path` inside it (the caller frees *rel), or
+ * ENOENT if none holds it */
+static int axl_dfs_reg_find(const char* path, dfs_t** dfs, char** rel)
 {
-    if (size == 0 || size >= AXL_DFUSE_IOCTL_MAX) {
-        return EOVERFLOW;
-    }
-    void* buf = malloc(size);
-    if (buf == NULL) {
+    char* p = axl_dfs_norm(path);
+    if (p == NULL) {
         return ENOMEM;
     }
-    if (ioctl(fd, _IOC(_IOC_READ, AXL_DFUSE_IOCTL_TYPE, nr, size), buf) != 0) {
-        int err = errno;
-        free(buf);
-        return err;
-    }
-    d_iov_set(iov, buf, size);
-    return 0;
-}
-
-/* Read all of a small file; the caller frees it */
-static int axl_dfs_slurp(const char* path, d_iov_t* iov)
-{
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        return errno;
-    }
-    int rc = 0;
-    void* buf = NULL;
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
-        rc = errno;
-    } else if (st.st_size <= 0) {
-        rc = EIO;
-    } else if ((buf = malloc(st.st_size)) == NULL) {
-        rc = ENOMEM;
-    } else if (axl_read_attempt(path, fd, buf, st.st_size) != st.st_size) {
-        rc = EIO;
-    }
-    close(fd);
-    if (rc != 0) {
-        free(buf);
-        return rc;
-    }
-    d_iov_set(iov, buf, st.st_size);
-    return 0;
-}
-
-/* The pool handle carries the pool map and is often too big for an ioctl, in which case
- * dfuse writes it to a file in /tmp and replies with the file's name. */
-static int axl_dfs_fetch_pool(int fd, size_t size, daos_handle_t* poh)
-{
-    d_iov_t iov;
-    int rc;
-    if (size < AXL_DFUSE_IOCTL_MAX) {
-        rc = axl_dfs_fetch(fd, AXL_DFUSE_IOCTL_REPLY_POH, size, &iov);
-    } else {
-        char name[128] = "";
-        unsigned long cmd =
-            _IOC(_IOC_READ, AXL_DFUSE_IOCTL_TYPE, AXL_DFUSE_IOCTL_REPLY_PFILE, sizeof(name));
-        if (ioctl(fd, cmd, name) != 0) {
-            return errno;
+    int rc = ENOENT;
+    pthread_mutex_lock(&axl_dfs_reg_lock);
+    struct axl_dfs_reg* best = NULL;
+    size_t best_len = 0;
+    struct axl_dfs_reg* r;
+    for (r = axl_dfs_regs; r != NULL; r = r->next) {
+        size_t n = strlen(r->path);
+        if (strncmp(p, r->path, n) == 0 && (p[n] == '\0' || p[n] == '/') && n >= best_len) {
+            best = r;
+            best_len = n;
         }
-        name[sizeof(name) - 1] = '\0';
-        rc = axl_dfs_slurp(name, &iov);
-        unlink(name);
     }
-    if (rc != 0) {
-        return rc;
-    }
-    int der = daos_pool_global2local(iov, poh);
-    free(iov.iov_buf);
-    return der ? axl_dfs_der("daos_pool_global2local", der) : 0;
-}
-
-/* Import the pool, container and dfs handles of the dfuse that serves `fd` */
-static int axl_dfs_import(int fd, struct axl_dfs_cont* c)
-{
-    int rc = EAGAIN;
-    int tries;
-    /* dfuse answers EAGAIN when a handle has grown since the size query */
-    for (tries = 0; tries < 3 && rc == EAGAIN; tries++) {
-        axl_dfs_cont_release(c);
-
-        struct axl_dfuse_hs_reply hs;
-        if (ioctl(fd, AXL_DFUSE_IOCTL_IL_SIZE, &hs) != 0) {
-            rc = errno;
-            break;
-        }
-        if (hs.fsr_version != AXL_DFUSE_IOCTL_VERSION) {
-            rc = EPROTO;
-            break;
-        }
-
-        rc = axl_dfs_fetch_pool(fd, hs.fsr_pool_size, &c->poh);
-        if (rc != 0) {
-            continue;
-        }
-
-        d_iov_t iov;
-        rc = axl_dfs_fetch(fd, AXL_DFUSE_IOCTL_REPLY_COH, hs.fsr_cont_size, &iov);
-        if (rc != 0) {
-            continue;
-        }
-        int der = daos_cont_global2local(c->poh, iov, &c->coh);
-        free(iov.iov_buf);
-        if (der != 0) {
-            rc = axl_dfs_der("daos_cont_global2local", der);
-            continue;
-        }
-
-        rc = axl_dfs_fetch(fd, AXL_DFUSE_IOCTL_REPLY_DOH, hs.fsr_dfs_size, &iov);
-        if (rc != 0) {
-            continue;
-        }
-        rc = dfs_global2local(c->poh, c->coh, 0, iov, &c->dfs);
-        free(iov.iov_buf);
-    }
-    if (rc != 0) {
-        axl_dfs_cont_release(c);
-    }
-    return rc;
-}
-
-/* The dfs mount of the container `fd` is in.  The transfer's lock is held through an
- * import, so a container is imported once rather than once per thread. */
-static int axl_dfs_cont_get(
-    struct axl_dfs_xfer* x,
-    int fd,
-    const struct axl_dfuse_il_reply* il,
-    dfs_t** dfs)
-{
-    int rc = 0;
-    pthread_mutex_lock(&x->lock);
-    struct axl_dfs_cont* c = x->conts;
-    while (c != NULL && memcmp(c->uuid, il->fir_cont, sizeof(uuid_t)) != 0) {
-        c = c->next;
-    }
-    if (c == NULL) {
-        c = calloc(1, sizeof(*c));
-        if (c == NULL) {
+    if (best != NULL) {
+        const char* rest = p + best_len;   /* "" or "/..." */
+        const char* base = strcmp(best->cont_path, "/") == 0 && rest[0] != '\0' ? "" : best->cont_path;
+        *rel = malloc(strlen(base) + strlen(rest) + 1);
+        if (*rel == NULL) {
             rc = ENOMEM;
         } else {
-            memcpy(c->uuid, il->fir_cont, sizeof(uuid_t));
-            rc = axl_dfs_import(fd, c);
-            if (rc == 0) {
-                c->next = x->conts;
-                x->conts = c;
-            } else {
-                free(c);
-                c = NULL;
-            }
+            strcpy(*rel, base);
+            strcat(*rel, rest);
+            *dfs = best->dfs;
+            rc = 0;
         }
     }
-    if (c != NULL) {
-        *dfs = c->dfs;
-    }
-    pthread_mutex_unlock(&x->lock);
+    pthread_mutex_unlock(&axl_dfs_reg_lock);
+    free(p);
     return rc;
 }
 
-/* The libdfs view of the dfuse file open at `fd`, or the errno for why there is none.
- * Off dfuse the first ioctl fails with ENOTTY, and pil4dfs answers ENOTSUP for a file
- * it intercepts. */
-static int axl_dfs_open_obj(struct axl_dfs_xfer* x, int fd, dfs_t** dfs, dfs_obj_t** obj)
+/* The registration of `norm` (to `dfs`, unless that is NULL), taken off the list */
+static struct axl_dfs_reg* axl_dfs_reg_unlink_locked(const char* norm, dfs_t* dfs)
 {
-    struct axl_dfuse_il_reply il;
-    if (ioctl(fd, AXL_DFUSE_IOCTL_IL, &il) != 0) {
-        return errno;
+    struct axl_dfs_reg** pr = &axl_dfs_regs;
+    while (*pr != NULL &&
+           (strcmp((*pr)->path, norm) != 0 || (dfs != NULL && (*pr)->dfs != dfs))) {
+        pr = &(*pr)->next;
     }
-    if (il.fir_version != AXL_DFUSE_IOCTL_VERSION) {
-        return EPROTO;
+    struct axl_dfs_reg* r = *pr;
+    if (r != NULL) {
+        *pr = r->next;
     }
+    return r;
+}
 
-    int rc = axl_dfs_cont_get(x, fd, &il, dfs);
+static void axl_dfs_reg_free(struct axl_dfs_reg* r)
+{
+    if (r != NULL) {
+        free(r->path);
+        free(r->cont_path);
+        free(r);
+    }
+}
+
+int AXL_DFS_Register(const char* path, struct dfs* dfs, const char* cont_path)
+{
+    if (path == NULL || dfs == NULL || cont_path == NULL || cont_path[0] != '/') {
+        AXL_ERR("AXL_DFS_Register needs a path, a dfs mount and an absolute container path");
+        return AXL_FAILURE;
+    }
+    struct axl_dfs_reg* r = calloc(1, sizeof(*r));
+    char* p = axl_dfs_norm(path);
+    char* c = axl_dfs_norm(cont_path);
+    if (r == NULL || p == NULL || c == NULL) {
+        free(r);
+        free(p);
+        free(c);
+        return AXL_FAILURE;
+    }
+    r->path = p;
+    r->cont_path = c;
+    r->dfs = dfs;
+    pthread_mutex_lock(&axl_dfs_reg_lock);
+    struct axl_dfs_reg* old = axl_dfs_reg_unlink_locked(p, NULL);
+    r->next = axl_dfs_regs;
+    axl_dfs_regs = r;
+    pthread_mutex_unlock(&axl_dfs_reg_lock);
+    axl_dfs_reg_free(old);
+    return AXL_SUCCESS;
+}
+
+int AXL_DFS_Unregister(const char* path, struct dfs* dfs)
+{
+    char* p = axl_dfs_norm(path);
+    if (p == NULL) {
+        return AXL_FAILURE;
+    }
+    pthread_mutex_lock(&axl_dfs_reg_lock);
+    struct axl_dfs_reg* r = axl_dfs_reg_unlink_locked(p, dfs);
+    pthread_mutex_unlock(&axl_dfs_reg_lock);
+    free(p);
+    if (r == NULL) {
+        return AXL_FAILURE;
+    }
+    axl_dfs_reg_free(r);
+    return AXL_SUCCESS;
+}
+
+int AXL_DFS_Stat(const char* path, struct stat* st)
+{
+    dfs_t* dfs = NULL;
+    char* rel = NULL;
+    int rc = axl_dfs_reg_find(path, &dfs, &rel);
+    if (rc == ENOENT) {
+        return AXL_DFS_UNREGISTERED;
+    }
+    if (rc == 0) {
+        dfs_obj_t* obj = NULL;
+        rc = dfs_lookup(dfs, rel, O_RDONLY, &obj, NULL, st);
+        if (rc == 0) {
+            dfs_release(obj);
+        }
+        free(rel);
+    }
     if (rc != 0) {
-        return rc;
+        errno = rc;
+        return AXL_FAILURE;
     }
+    return AXL_SUCCESS;
+}
 
-    struct axl_dfuse_hsd_reply hsd;
-    if (ioctl(fd, AXL_DFUSE_IOCTL_IL_DSIZE, &hsd) != 0) {
-        return errno;
+int AXL_DFS_Mkdir(const char* dir, mode_t mode)
+{
+    dfs_t* dfs = NULL;
+    char* rel = NULL;
+    int rc = axl_dfs_reg_find(dir, &dfs, &rel);
+    if (rc == ENOENT) {
+        return AXL_DFS_UNREGISTERED;
     }
-    if (hsd.fsr_version != AXL_DFUSE_IOCTL_VERSION) {
-        return EPROTO;
-    }
-
-    d_iov_t iov;
-    rc = axl_dfs_fetch(fd, AXL_DFUSE_IOCTL_REPLY_DOOH, hsd.fsr_dobj_size, &iov);
     if (rc != 0) {
-        return rc;
+        return AXL_FAILURE;
     }
-    rc = dfs_obj_global2local(*dfs, 0, iov, obj);
-    free(iov.iov_buf);
-    return rc;
+
+    /* one component at a time from the container's root */
+    dfs_obj_t* parent = NULL;
+    char* save = NULL;
+    char* name = strtok_r(rel, "/", &save);
+    while (name != NULL && rc == 0) {
+        char* next = strtok_r(NULL, "/", &save);
+        rc = dfs_mkdir(dfs, parent, name, mode, 0);
+        if (rc == EEXIST) {
+            rc = 0;
+        }
+        if (rc == 0 && next != NULL) {
+            dfs_obj_t* child = NULL;
+            rc = dfs_lookup_rel(dfs, parent, name, O_RDWR, &child, NULL, NULL);
+            if (parent != NULL) {
+                dfs_release(parent);
+            }
+            parent = child;
+        }
+        if (rc != 0) {
+            AXL_ERR("Making directory %s: %s at %s", dir, strerror(rc), name);
+        }
+        name = next;
+    }
+    if (parent != NULL) {
+        dfs_release(parent);
+    }
+    free(rel);
+    return rc == 0 ? AXL_SUCCESS : AXL_FAILURE;
+}
+
+/* The handle of directory `path` in the registered container that holds it, else why its
+ * files go through POSIX.  Either is found once per transfer. */
+static int axl_dfs_dir_get(
+    struct axl_dfs_xfer* x,
+    const char* path,
+    dfs_t** dfs,
+    dfs_obj_t** obj)
+{
+    pthread_mutex_lock(&x->lock);
+    struct axl_dfs_dir* d = x->dirs;
+    while (d != NULL && strcmp(d->path, path) != 0) {
+        d = d->next;
+    }
+    if (d == NULL) {
+        d = calloc(1, sizeof(*d));
+        char* p = strdup(path);
+        if (d == NULL || p == NULL) {
+            free(d);
+            free(p);
+            pthread_mutex_unlock(&x->lock);
+            return ENOMEM;
+        }
+        d->path = p;
+        char* rel = NULL;
+        int reg = axl_dfs_reg_find(path, &d->dfs, &rel);
+        if (reg == 0) {
+            /* read-write, since creating a file writes its entry into the directory */
+            d->why = dfs_lookup(d->dfs, rel, O_RDWR, &d->obj, NULL, NULL);
+            free(rel);
+        } else {
+            d->why = (reg == ENOENT) ? AXL_DFS_PLAIN : reg;
+        }
+        d->next = x->dirs;
+        x->dirs = d;
+    }
+    int why = d->why;
+    *dfs = d->dfs;
+    *obj = d->obj;
+    pthread_mutex_unlock(&x->lock);
+    return why;
+}
+
+static const char* axl_dfs_reason(int why)
+{
+    switch (why) {
+    case AXL_DFS_NO_EQ:
+        return "no usable DAOS event queue";
+    case AXL_DFS_PLAIN:
+        return "no registered container holds it";
+    default:
+        return strerror(why);
+    }
 }
 
 struct axl_dfs_xfer* axl_dfs_xfer_new(void)
@@ -359,6 +359,7 @@ struct axl_dfs_xfer* axl_dfs_xfer_new(void)
         free(x);
         return NULL;
     }
+    x->mode = axl_getmode(1, 1, 0);
     return x;
 }
 
@@ -367,36 +368,44 @@ void axl_dfs_xfer_free(struct axl_dfs_xfer* x)
     if (x == NULL) {
         return;
     }
-    while (x->conts != NULL) {
-        struct axl_dfs_cont* c = x->conts;
-        x->conts = c->next;
-        axl_dfs_cont_release(c);
-        free(c);
+    /* the directories' handles belong to the registered mounts */
+    while (x->dirs != NULL) {
+        struct axl_dfs_dir* d = x->dirs;
+        x->dirs = d->next;
+        if (d->obj != NULL) {
+            dfs_release(d->obj);
+        }
+        free(d->path);
+        free(d);
     }
 
-    AXL_DBG(1, "DFS transfer: %lu files (%llu bytes) through libdfs, %lu through POSIX",
-        x->files_dfs, x->bytes_dfs, x->files_posix);
+    AXL_DBG(1, "DFS transfer: %lu files (%llu bytes) through libdfs, %lu through POSIX, "
+        "%lu under no registered container", x->files_dfs, x->bytes_dfs, x->files_posix,
+        x->files_plain);
 
-    /* Data that should have bypassed FUSE went through it, or through pil4dfs; one rank
-     * says so, since every rank shares the configuration that decides it. */
+    /* Files a registered container holds went through POSIX instead; one rank says so,
+     * since every rank shares the configuration that decides it. */
     if (x->files_posix > 0 && axl_rank <= 0) {
         AXL_ERR("DFS transfer copied %lu of %lu files through POSIX, not libdfs; first: %s",
-            x->files_posix, x->files_posix + x->files_dfs,
-            x->posix_reason == AXL_DFS_NO_EQ ? "no usable DAOS event queue"
-                                             : strerror(x->posix_reason));
+            x->files_posix, x->files_posix + x->files_dfs, axl_dfs_reason(x->posix_reason));
     }
 
     pthread_mutex_destroy(&x->lock);
     free(x);
 }
 
-static void axl_dfs_count(struct axl_dfs_xfer* x, int posix_reason, unsigned long long bytes)
+static void axl_dfs_count(
+    struct axl_dfs_xfer* x,
+    int posix_reason,
+    unsigned long long bytes)
 {
     if (x == NULL) {
         return;
     }
     pthread_mutex_lock(&x->lock);
-    if (posix_reason != 0) {
+    if (posix_reason == AXL_DFS_PLAIN) {
+        x->files_plain++;
+    } else if (posix_reason != 0) {
         if (x->files_posix++ == 0) {
             x->posix_reason = posix_reason;
         }
@@ -407,11 +416,8 @@ static void axl_dfs_count(struct axl_dfs_xfer* x, int posix_reason, unsigned lon
     pthread_mutex_unlock(&x->lock);
 }
 
-/* ---------------------------------------------------------------------------------------
- * One worker thread.  Its own event queue has its own network context, so the threads
- * never contend to make progress.  Two writes are in flight at a time, each buffer
- * refilled while the other's write runs; the same two buffers serve the whole transfer,
- * so the NIC's registration cache holds them rather than a new one per file. */
+/* Each thread's event queue has its own network context, so threads never contend to make
+ * progress.  Its two buffers alternate, and serving every file keeps them in the MR cache. */
 
 struct axl_dfs_thread {
     struct axl_dfs_xfer* xfer;
@@ -520,10 +526,32 @@ int axl_dfs_file_copy(
     const char* src_file,
     const char* dst_file,
     unsigned long buf_size,
-    int resume)
+    int resume,
+    const unsigned long* size,
+    int* size_checked)
 {
+    *size_checked = 0;
     if (t == NULL || ! t->usable) {
         axl_dfs_count(t ? t->xfer : NULL, AXL_DFS_NO_EQ, 0);
+        return axl_file_copy(src_file, dst_file, buf_size, resume);
+    }
+
+    /* SCR has made the destination's directory */
+    const char* slash = strrchr(dst_file, '/');
+    const char* name = slash != NULL ? slash + 1 : dst_file;
+    char* dir = slash == NULL      ? strdup(".")
+              : slash == dst_file ? strdup("/")
+                                  : strndup(dst_file, (size_t) (slash - dst_file));
+    dfs_t* dfs = NULL;
+    dfs_obj_t* parent = NULL;
+    int why = dir != NULL ? axl_dfs_dir_get(t->xfer, dir, &dfs, &parent) : ENOMEM;
+    free(dir);
+    if (why == 0) {
+        why = axl_dfs_buffers(t, buf_size);
+    }
+    if (why != 0) {
+        AXL_DBG(2, "Copying %s through POSIX: %s", dst_file, axl_dfs_reason(why));
+        axl_dfs_count(t->xfer, why, 0);
         return axl_file_copy(src_file, dst_file, buf_size, resume);
     }
 
@@ -535,46 +563,28 @@ int axl_dfs_file_copy(
         return AXL_FAILURE;
     }
 
-    /* Through the kernel, which follows the prefix's symlinks into the container and has
-     * dfuse create the file.  Without O_TRUNC, a resumed copy continues after what is
-     * already there. */
-    int flags = O_WRONLY | O_CREAT | (resume ? 0 : O_TRUNC);
-    int dst_fd = axl_open(dst_file, flags, axl_getmode(1, 1, 0));
-    if (dst_fd < 0) {
-        AXL_ERR("Opening file for writing: axl_open(%s) errno=%d %s",
-            dst_file, errno, strerror(errno)
-        );
+    /* without O_TRUNC, a resumed copy continues after what is already there */
+    dfs_obj_t* obj = NULL;
+    int flags = O_RDWR | O_CREAT | (resume ? 0 : O_TRUNC);
+    int err = dfs_open(dfs, parent, name, S_IFREG | t->xfer->mode, flags, 0, 0, NULL, &obj);
+    if (err != 0) {
+        AXL_ERR("Creating %s: dfs_open %s", dst_file, strerror(err));
         close(src_fd);
         return AXL_FAILURE;
-    }
-
-    dfs_t* dfs = NULL;
-    dfs_obj_t* obj = NULL;
-    int why = axl_dfs_buffers(t, buf_size);
-    if (why == 0) {
-        why = axl_dfs_open_obj(t->xfer, dst_fd, &dfs, &obj);
-    }
-    if (why != 0) {
-        /* nothing written yet, so the ordinary copy starts from a clean slate */
-        close(dst_fd);
-        close(src_fd);
-        AXL_DBG(2, "Copying %s through POSIX: %s", dst_file, strerror(why));
-        axl_dfs_count(t->xfer, why, 0);
-        return axl_file_copy(src_file, dst_file, buf_size, resume);
     }
 
     int rc = AXL_SUCCESS;
     daos_off_t off = 0;
     if (resume) {
-        daos_size_t size = 0;
-        int err = dfs_get_size(dfs, obj, &size);
-        if (err != 0 || lseek(src_fd, (off_t) size, SEEK_SET) != (off_t) size) {
+        daos_size_t done = 0;
+        err = dfs_get_size(dfs, obj, &done);
+        if (err != 0 || lseek(src_fd, (off_t) done, SEEK_SET) != (off_t) done) {
             AXL_ERR("Resuming %s: dfs_get_size %s, errno=%d %s",
                 dst_file, strerror(err), errno, strerror(errno)
             );
             rc = AXL_FAILURE;
         }
-        off = size;
+        off = done;
     }
 
     /* referenced by DAOS until their writes complete */
@@ -586,7 +596,7 @@ int axl_dfs_file_copy(
     while (rc == AXL_SUCCESS) {
         if (inflight[slot]) {
             inflight[slot] = 0;
-            int err = axl_dfs_wait(t, slot);
+            err = axl_dfs_wait(t, slot);
             if (err != 0) {
                 AXL_ERR("Writing %s: %s", dst_file, strerror(err));
                 rc = AXL_FAILURE;
@@ -608,7 +618,7 @@ int axl_dfs_file_copy(
         sgl[slot].sg_nr_out = 0;
         sgl[slot].sg_iovs = &iov[slot];
         /* an error here means the event never launched */
-        int err = dfs_write(dfs, obj, &sgl[slot], off, &t->ev[slot]);
+        err = dfs_write(dfs, obj, &sgl[slot], off, &t->ev[slot]);
         if (err != 0) {
             AXL_ERR("dfs_write of %s at offset %llu: %s",
                 dst_file, (unsigned long long) off, strerror(err)
@@ -631,7 +641,7 @@ int axl_dfs_file_copy(
     int i;
     for (i = 0; i < 2 && ! t->stuck; i++) {
         if (inflight[i]) {
-            int err = axl_dfs_wait(t, i);
+            err = axl_dfs_wait(t, i);
             if (err != 0) {
                 AXL_ERR("Writing %s: %s", dst_file, strerror(err));
                 rc = AXL_FAILURE;
@@ -644,19 +654,27 @@ int axl_dfs_file_copy(
         dfs_release(obj);
     }
 
-    /* A completed dfs_write is durable, so there is nothing for fsync to flush */
-    if (close(dst_fd) != 0) {
-        AXL_ERR("Closing %s: errno=%d %s", dst_file, errno, strerror(errno));
-        rc = AXL_FAILURE;
-    }
     close(src_fd);
+
+    /* Every write from offset 0 (or the resumed size) to off landed, so off is the file's
+     * size, and AXL_Wait need not ask the servers for it again. */
+    if (rc == AXL_SUCCESS && size != NULL) {
+        if ((unsigned long long) off == *size) {
+            *size_checked = 1;
+        } else {
+            AXL_ERR("file `%s' size is %llu expected %lu", dst_file, (unsigned long long) off, *size);
+            rc = AXL_FAILURE;
+        }
+    }
 
     if (rc == AXL_SUCCESS) {
         axl_dfs_count(t->xfer, 0, bytes);
     } else {
-        /* A failed write can leave a hole under a full-size file, so the size check in
-         * AXL_Wait might pass it; remove it. */
-        axl_file_unlink(dst_file);
+        /* a failed write can leave a hole under a full-size file */
+        err = dfs_remove(dfs, parent, name, false, NULL);
+        if (err != 0) {
+            AXL_ERR("Removing %s after a failed copy: %s", dst_file, strerror(err));
+        }
     }
     return rc;
 }

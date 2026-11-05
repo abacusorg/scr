@@ -884,7 +884,19 @@ int AXL_Add (int id, const char* src, const char* dest)
     char* dest_copy = strdup(dest);
 
     unsigned int src_path_type  = path_type(src);
-    unsigned int dest_path_type = path_type(dest);
+
+    /* A DFS transfer takes a file's destination as the file's own name, as SCR gives it,
+     * rather than ask the servers through dfuse whether it is a directory to copy into. */
+    unsigned int dest_path_type = PATH_UNKNOWN;
+    kvtree* xlist;
+    axl_xfer_t xtype;
+    axl_xfer_state_t xstate;
+    if (src_path_type != PATH_FILE ||
+        axl_get_info(id, &xlist, &xtype, &xstate) != AXL_SUCCESS ||
+        xtype != AXL_XFER_DFS)
+    {
+        dest_path_type = path_type(dest);
+    }
 
     char* src_basename = basename(src_copy);
 
@@ -994,6 +1006,12 @@ static int axl_check_file_sizes(int id)
     while ((elem = axl_get_next_path(id, elem, NULL, &dst))) {
         /* Get the kvtree for the file */
         kvtree* src_kvtree = kvtree_elem_hash(elem);
+
+        int checked = 0;
+        kvtree_util_get_int(src_kvtree, AXL_KEY_FILE_SIZE_CHECKED, &checked);
+        if (checked) {
+            continue;
+        }
 
         int rc = axl_check_file_size(dst, src_kvtree);
         if (rc != AXL_SUCCESS) {
@@ -1588,3 +1606,30 @@ int AXL_Stop ()
     return rc;
 }
 
+/* axl_dfs.c defines these whenever the DAOS client is there */
+#ifndef HAVE_DAOS
+int AXL_DFS_Register(const char* path, struct dfs* dfs, const char* cont_path)
+{
+    (void) path; (void) dfs; (void) cont_path;
+    AXL_ERR("DFS registration requested but not enabled during build (ENABLE_DAOS)");
+    return AXL_FAILURE;
+}
+
+int AXL_DFS_Unregister(const char* path, struct dfs* dfs)
+{
+    (void) path; (void) dfs;
+    return AXL_FAILURE;
+}
+
+int AXL_DFS_Mkdir(const char* dir, mode_t mode)
+{
+    (void) dir; (void) mode;
+    return AXL_DFS_UNREGISTERED;
+}
+
+int AXL_DFS_Stat(const char* path, struct stat* st)
+{
+    (void) path; (void) st;
+    return AXL_DFS_UNREGISTERED;
+}
+#endif /* HAVE_DAOS */

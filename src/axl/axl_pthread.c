@@ -244,7 +244,15 @@ static void* axl_pthread_func(void* arg)
         int rc;
 #ifdef AXL_HAVE_DFS
         if (pdata->dfs) {
-            rc = axl_dfs_file_copy(dfs_thread, src, dst, file_buf_size, pdata->resume);
+            unsigned long size;
+            int have_size = kvtree_util_get_unsigned_long(elem_hash, AXL_KEY_FILE_SIZE, &size)
+                == KVTREE_SUCCESS;
+            int size_checked = 0;
+            rc = axl_dfs_file_copy(dfs_thread, src, dst, file_buf_size, pdata->resume,
+                have_size ? &size : NULL, &size_checked);
+            if (size_checked) {
+                kvtree_util_set_int(elem_hash, AXL_KEY_FILE_SIZE_CHECKED, 1);
+            }
         } else
 #endif
         rc = axl_file_copy(src, dst, file_buf_size, pdata->resume);
@@ -423,6 +431,9 @@ static int __axl_pthread_start (int id, int resume)
     {
         /* get the hash for this file */
         kvtree* elem_hash = kvtree_elem_hash(elem);
+
+        /* a resumed transfer's earlier copy may have changed since it was checked */
+        kvtree_unset(elem_hash, AXL_KEY_FILE_SIZE_CHECKED);
 
         int status;
         kvtree_util_get_int(elem_hash, AXL_KEY_FILE_STATUS, &status);

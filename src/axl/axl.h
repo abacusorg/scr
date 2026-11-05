@@ -1,6 +1,8 @@
 #ifndef AXL_H
 #define AXL_H
 
+#include <sys/types.h>
+
 /* enable C++ codes to include this header directly */
 #ifdef __cplusplus
 extern "C" {
@@ -51,8 +53,9 @@ typedef enum {
                              */
     AXL_XFER_PTHREAD,      /* parallel copy using pthreads */
     AXL_XFER_STATE_FILE,    /* Use the xfer type specified in the state_file. */
-    AXL_XFER_DFS,           /* AXL_XFER_PTHREAD, writing a destination on a DAOS dfuse
-                             * mount through libdfs rather than FUSE (needs ENABLE_DAOS) */
+    AXL_XFER_DFS,           /* AXL_XFER_PTHREAD, writing a destination under a container
+                             * registered with AXL_DFS_Register through libdfs (needs
+                             * ENABLE_DAOS) */
 } axl_xfer_t;
 
 /*
@@ -139,6 +142,29 @@ int AXL_Free (int id);
 /** Stop (cancel and free) all transfers,
  * useful to clean the plate when restarting */
 int AXL_Stop (void);
+
+/** The containers AXL_XFER_DFS writes.  The caller mounts a container with libdfs (dfs_mount,
+ * not dfuse) and registers it by the path its files are named under: an AXL_XFER_DFS
+ * destination under `path` is then written to `cont_path` (absolute, in the container) plus
+ * the rest of the destination.  `dfs` must stay mounted until `path` is unregistered, which
+ * must follow AXL_Free of every transfer that wrote there.  AXL_SUCCESS, or another value on
+ * failure. */
+struct dfs;
+int AXL_DFS_Register (const char* path, struct dfs* dfs, const char* cont_path);
+/** Only if `path` is still registered to `dfs`: a later registration replaces it */
+int AXL_DFS_Unregister (const char* path, struct dfs* dfs);
+
+/** Returned by AXL_DFS_Mkdir when no registered container holds the directory */
+#define AXL_DFS_UNREGISTERED (1)
+
+/** mkdir -p `dir` in the registered container that holds it, an existing directory being no
+ * error: AXL_SUCCESS, AXL_DFS_UNREGISTERED, or another value on failure */
+int AXL_DFS_Mkdir (const char* dir, mode_t mode);
+
+/** stat(2) of `path` in the registered container that holds it: AXL_SUCCESS,
+ * AXL_DFS_UNREGISTERED, or another value on failure, with errno set */
+struct stat;
+int AXL_DFS_Stat (const char* path, struct stat* st);
 
 /* enable C++ codes to include this header directly */
 #ifdef __cplusplus

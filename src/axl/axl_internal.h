@@ -58,6 +58,9 @@ extern int axl_rank;
 #define AXL_KEY_FILE_DEST     ("DEST")
 #define AXL_KEY_FILE_STATUS   ("STATUS")
 #define AXL_KEY_FILE_CRC      ("CRC")
+#define AXL_KEY_FILE_SIZE     ("SIZE")
+/* set when the copy itself confirmed the destination's size, so AXL_Wait skips its stat */
+#define AXL_KEY_FILE_SIZE_CHECKED ("SIZE_CHECKED")
 #define AXL_KEY_STATE_FILE    ("STATE_FILE")
 
 /* TRANSFER STATUS */

@@ -388,7 +388,7 @@ int axl_meta_encode(const char* file, kvtree* meta)
         kvtree_util_set_unsigned_long(meta, "MODE", (unsigned long) statbuf.st_mode);
         kvtree_util_set_unsigned_long(meta, "UID",  (unsigned long) statbuf.st_uid);
         kvtree_util_set_unsigned_long(meta, "GID",  (unsigned long) statbuf.st_gid);
-        kvtree_util_set_unsigned_long(meta, "SIZE", (unsigned long) statbuf.st_size);
+        kvtree_util_set_unsigned_long(meta, AXL_KEY_FILE_SIZE, (unsigned long) statbuf.st_size);
   
         uint64_t secs, nsecs;
         axl_stat_get_atimes(&statbuf, &secs, &nsecs);
@@ -419,7 +419,7 @@ int axl_check_file_size(const char* file, const kvtree* meta)
 {
     unsigned long size;
     int rc = AXL_SUCCESS;
-    if (kvtree_util_get_unsigned_long(meta, "SIZE", &size) == KVTREE_SUCCESS) {
+    if (kvtree_util_get_unsigned_long(meta, AXL_KEY_FILE_SIZE, &size) == KVTREE_SUCCESS) {
         /* got a size field in the metadata, stat the file */
         struct stat statbuf;
         int stat_rc = lstat(file, &statbuf);
