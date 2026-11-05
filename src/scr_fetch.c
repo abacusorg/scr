@@ -250,7 +250,7 @@ static int scr_fetch_data(
   } else {
     /* just stat the file to check that it exists */
     for (i = 0; i < num_files; i++) {
-      if (access(src_filelist[i], R_OK) < 0) {
+      if (scr_file_is_readable(src_filelist[i]) != SCR_SUCCESS) {
         /* either can't read this file or it doesn't exist */
         success = 0;
         break;
@@ -301,7 +301,7 @@ static int scr_fetch_data(
 
     /* stat the file to get its size and other metadata */
     struct stat stat_buf;
-    int stat_rc = stat(dest_file, &stat_buf);
+    int stat_rc = scr_stat(dest_file, &stat_buf);
     if (stat_rc == 0) {
       unsigned long filesize = (unsigned long) stat_buf.st_size;
       scr_meta_set_filesize(meta, filesize);

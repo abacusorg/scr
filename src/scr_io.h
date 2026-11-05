@@ -96,6 +96,10 @@ int scr_write_pad_n(
 /* given a filename, return number of bytes in file */
 unsigned long scr_file_size(const char* file);
 
+/* stat(2) of a file, which may be in a container registered with AXL */
+struct stat;
+int scr_stat(const char* file, struct stat* st);
+
 /* tests whether the file or directory exists */
 int scr_file_exists(const char* file);
 

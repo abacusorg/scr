@@ -38,6 +38,7 @@
 #include "scr_err.h"
 #include "scr_io.h"
 #include "scr_util.h"
+#include "axl.h"
 
 #include <stdlib.h>
 #include <stdarg.h>
@@ -668,12 +669,22 @@ int scr_write_pad_n(int n, char** files, int* fds,
 }
 
 /* given a filename, return number of bytes in file */
+/* stat(2), through libdfs for a file in a container registered with AXL, which has no mount */
+int scr_stat(const char* file, struct stat* st)
+{
+  int rc = AXL_DFS_Stat(file, st);
+  if (rc == AXL_DFS_UNREGISTERED) {
+    return stat(file, st);
+  }
+  return (rc == AXL_SUCCESS) ? 0 : -1;
+}
+
 unsigned long scr_file_size(const char* file)
 {
   /* get file size in bytes */
   unsigned long bytes = 0;
   struct stat stat_buf;
-  int stat_rc = stat(file, &stat_buf);
+  int stat_rc = scr_stat(file, &stat_buf);
   if (stat_rc == 0) {
     /*
     mode = stat_buf.st_mode;
@@ -686,6 +697,12 @@ unsigned long scr_file_size(const char* file)
 /* tests whether the file or directory exists */
 int scr_file_exists(const char* file)
 {
+  struct stat st;
+  int rc = AXL_DFS_Stat(file, &st);
+  if (rc != AXL_DFS_UNREGISTERED) {
+    return (rc == AXL_SUCCESS) ? SCR_SUCCESS : SCR_FAILURE;
+  }
+
   /* check whether the file exists */
   if (access(file, F_OK) < 0) {
     /* TODO: would be nice to print a message here, but
@@ -702,14 +719,15 @@ int scr_file_exists(const char* file)
 /* tests whether the file or directory is readable */
 int scr_file_is_readable(const char* file)
 {
+  /* a file in a registered container has no mount for access(2) to look at */
+  struct stat st;
+  int rc = AXL_DFS_Stat(file, &st);
+  if (rc != AXL_DFS_UNREGISTERED) {
+    return (rc == AXL_SUCCESS) ? SCR_SUCCESS : SCR_FAILURE;
+  }
+
   /* check whether the file can be read */
   if (access(file, R_OK) < 0) {
-    /* TODO: would be nice to print a message here, but
-     *       functions calling this expect it to be quiet
-    scr_dbg(2, "File not readable: %s errno=%d %s @ %s:%d",
-      file, errno, strerror(errno), __FILE__, __LINE__
-    );
-    */
     return SCR_FAILURE;
   }
   return SCR_SUCCESS;
