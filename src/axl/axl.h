@@ -51,6 +51,8 @@ typedef enum {
                              */
     AXL_XFER_PTHREAD,      /* parallel copy using pthreads */
     AXL_XFER_STATE_FILE,    /* Use the xfer type specified in the state_file. */
+    AXL_XFER_DFS,           /* AXL_XFER_PTHREAD, writing a destination on a DAOS dfuse
+                             * mount through libdfs rather than FUSE (needs ENABLE_DAOS) */
 } axl_xfer_t;
 
 /*
@@ -97,7 +99,9 @@ kvtree* AXL_Config(
   const kvtree* config        /** [IN] - kvtree of options */
 );
 
-/** Add a file to an existing transfer handle */
+/** Add a file to an existing transfer handle.  A file whose destination is a directory is
+ * copied into it, except in an AXL_XFER_DFS transfer, which takes the destination as the
+ * file's own name. */
 int AXL_Add (int id, const char* source, const char* destination);
 
 /** Initiate a transfer for all files in handle ID */

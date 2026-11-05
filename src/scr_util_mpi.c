@@ -304,6 +304,7 @@ axl_xfer_t scr_xfer_str_to_axl_type(const char* str)
     {"DEFAULT",  AXL_XFER_DEFAULT},
     {"NATIVE",   AXL_XFER_NATIVE},
     {"PTHREAD",  AXL_XFER_PTHREAD},
+    {"DFS",      AXL_XFER_DFS},
     {"SYNC",     AXL_XFER_SYNC},
     {"DATAWARP", AXL_XFER_ASYNC_DW},
     {"BBAPI",    AXL_XFER_ASYNC_BBAPI},

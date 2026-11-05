@@ -34,6 +34,10 @@
 #include "axl_pthread.h"
 #endif /* HAVE_PTHREAD */
 
+#ifdef AXL_HAVE_DFS
+#include "axl_dfs.h"
+#endif /* AXL_HAVE_DFS */
+
 #ifdef HAVE_BBAPI
 #include "axl_async_bbapi.h"
 #endif /* HAVE_BBAPI */
@@ -299,6 +303,9 @@ int AXL_Finalize (void)
         /* TODO: are there cases where we also need to delete trees? */
         axl_free(&axl_kvtrees);
         axl_kvtrees_count = 0;
+#ifdef AXL_HAVE_DFS
+        axl_dfs_finalize();
+#endif
     }
 
     return rc;
@@ -657,6 +664,13 @@ int AXL_Create(axl_xfer_t xtype, const char* name, const char* state_file)
         break;
 #endif /* HAVE_PTHREADS */
 
+    case AXL_XFER_DFS:
+#ifndef AXL_HAVE_DFS
+        AXL_ERR("DFS transfers requested but not enabled during build (ENABLE_DAOS)");
+        rc = AXL_FAILURE;
+#endif /* AXL_HAVE_DFS */
+        break;
+
     case AXL_XFER_ASYNC_BBAPI:
 #ifdef HAVE_BBAPI
         /* Load the BB library on the very first call to
@@ -806,6 +820,9 @@ static int __AXL_Add (int id, const char* src, const char* dest)
         break;
 
 #ifdef HAVE_PTHREADS
+#ifdef AXL_HAVE_DFS
+    case AXL_XFER_DFS:
+#endif
     case AXL_XFER_PTHREAD:
         break;
 #endif /* HAVE_PTHREADS */
@@ -1116,6 +1133,9 @@ int __AXL_Dispatch (int id, int resume)
         break;
 
 #ifdef HAVE_PTHREADS
+#ifdef AXL_HAVE_DFS
+    case AXL_XFER_DFS:
+#endif
     case AXL_XFER_PTHREAD:
         if (resume) {
             rc = axl_pthread_resume(id);
@@ -1280,6 +1300,9 @@ int AXL_Test (int id)
         break;
 
 #ifdef HAVE_PTHREADS
+#ifdef AXL_HAVE_DFS
+    case AXL_XFER_DFS:
+#endif
     case AXL_XFER_PTHREAD:
         rc = axl_pthread_test(id);
         break;
@@ -1350,6 +1373,9 @@ int AXL_Wait (int id)
         break;
 
 #ifdef HAVE_PTHREADS
+#ifdef AXL_HAVE_DFS
+    case AXL_XFER_DFS:
+#endif
     case AXL_XFER_PTHREAD:
         rc = axl_pthread_wait(id);
         break;
@@ -1374,8 +1400,11 @@ int AXL_Wait (int id)
     }
 
 end:
-    /* Are all our destination files the correct size? */
-    rc = axl_check_file_sizes(id);
+    /* Are all our destination files the correct size?  The size alone can pass for a
+     * failed copy: a DAOS file with a hole has the size of its last write. */
+    if (axl_check_file_sizes(id) != AXL_SUCCESS) {
+        rc = AXL_FAILURE;
+    }
 
     /* Set permissions and creation times on files */
     if (rc == AXL_SUCCESS && axl_copy_metadata) {
@@ -1448,6 +1477,9 @@ int AXL_Cancel (int id)
 #endif
 
 #ifdef HAVE_PTHREADS
+#ifdef AXL_HAVE_DFS
+    case AXL_XFER_DFS:
+#endif
     case AXL_XFER_PTHREAD:
         rc = axl_pthread_cancel(id);
         break;
@@ -1501,7 +1533,7 @@ int AXL_Free (int id)
     }
 
 #ifdef HAVE_PTHREADS
-    if (xtype == AXL_XFER_PTHREAD) {
+    if (xtype == AXL_XFER_PTHREAD || xtype == AXL_XFER_DFS) {
         axl_pthread_free(id);
     }
 #endif
@@ -1555,3 +1587,4 @@ int AXL_Stop ()
 
     return rc;
 }
+

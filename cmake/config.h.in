@@ -9,6 +9,7 @@
 #cmakedefine HAVE_DATAWARP
 #cmakedefine HAVE_BBAPI
 #cmakedefine HAVE_BBAPI_FALLBACK
+#cmakedefine HAVE_DAOS
 
 // Optional Libs
 #cmakedefine HAVE_LIBYOGRT

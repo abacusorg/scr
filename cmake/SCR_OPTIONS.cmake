@@ -49,6 +49,9 @@ MESSAGE(STATUS "ENABLE_IBM_BBAPI: ${ENABLE_IBM_BBAPI}")
 OPTION(ENABLE_CRAY_DW "Whether to enable Cray Datawarp support" OFF)
 MESSAGE(STATUS "ENABLE_CRAY_DW: ${ENABLE_CRAY_DW}")
 
+OPTION(ENABLE_DAOS "Whether to enable the DFS transfer type, which writes through DAOS libdfs" OFF)
+MESSAGE(STATUS "ENABLE_DAOS: ${ENABLE_DAOS}")
+
 # define CMAKE_INSTALL_SYSCONFDIR for SCR_CONFIG_FILE path
 INCLUDE(GNUInstallDirs)
 

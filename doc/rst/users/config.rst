@@ -668,7 +668,8 @@ The table in this section specifies the full set of SCR configuration parameters
        detailed example.
    * - :code:`SCR_FLUSH_TYPE`
      - :code:`SYNC`
-     - Specify the flush transfer method.  Set to one of: :code:`SYNC`, :code:`PTHREAD`, :code:`BBAPI`, or :code:`DATAWARP`.
+     - Specify the flush transfer method.  Set to one of: :code:`SYNC`, :code:`PTHREAD`, :code:`DFS`, :code:`BBAPI`, or :code:`DATAWARP`.
+       :code:`DFS` is :code:`PTHREAD`, except that a destination file on a DAOS dfuse mount is written through libdfs instead of FUSE; it needs an SCR built with :code:`ENABLE_DAOS`.
    * - :code:`SCR_FLUSH_WIDTH`
      - 256
      - Specify the number of processes that may write simultaneously to the parallel file system.

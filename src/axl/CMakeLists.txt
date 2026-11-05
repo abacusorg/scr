@@ -10,6 +10,10 @@ IF(HAVE_DATAWARP)
     LIST(APPEND axl_optional_srcs axl_async_datawarp.c)
 ENDIF(HAVE_DATAWARP)
 
+IF(HAVE_DAOS)
+    LIST(APPEND axl_optional_srcs axl_dfs.c)
+ENDIF(HAVE_DAOS)
+
 LIST(APPEND libaxl_srcs
     axl.c
     axl_sync.c

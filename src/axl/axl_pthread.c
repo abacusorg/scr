@@ -7,6 +7,10 @@
 #include "axl_pthread.h"
 #include "axl_sync.h"
 
+#ifdef AXL_HAVE_DFS
+#include "axl_dfs.h"
+#endif
+
 /* get_nprocs() */
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
@@ -66,6 +70,14 @@ struct axl_pthread_data
 
     /* Array of our thread IDs */
     pthread_t* tid;
+
+    /* Set (under lock) by axl_pthread_cancel; workers stop at their next file */
+    int cancel;
+
+#ifdef AXL_HAVE_DFS
+    /* AXL_XFER_DFS: the DAOS handles this transfer's threads share, else NULL */
+    struct axl_dfs_xfer* dfs;
+#endif
 };
 
 /* This is a linked list that is used to lookup which axl_pthread_data is
@@ -182,15 +194,25 @@ void axl_pthread_data_remove(int id)
 /* The actual pthread function */
 static void* axl_pthread_func(void* arg)
 {
+    struct axl_pthread_data* pdata = arg;
+
+#ifdef AXL_HAVE_DFS
+    /* Cancelling a thread inside libdaos could leave its locks held for good, so a DFS
+     * worker ignores pthread_cancel and stops between files on pdata->cancel instead. */
+    struct axl_dfs_thread* dfs_thread = NULL;
+    if (pdata->dfs) {
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+        dfs_thread = axl_dfs_thread_new(pdata->dfs);
+    } else
+#endif
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
-    struct axl_pthread_data* pdata = arg;
     while (1) {
         pthread_mutex_lock(&pdata->lock);
 
         /* Get a file to transfer */
         struct axl_work* work = pdata->head;
-        if (! work) {
+        if (! work || pdata->cancel) {
             /* No more work to do */
             pthread_mutex_unlock(&pdata->lock);
             break;
@@ -219,7 +241,13 @@ static void* axl_pthread_func(void* arg)
         assert(success == KVTREE_SUCCESS);
 
         /* Copy the file from soruce to destination */
-        int rc = axl_file_copy(src, dst, file_buf_size, pdata->resume);
+        int rc;
+#ifdef AXL_HAVE_DFS
+        if (pdata->dfs) {
+            rc = axl_dfs_file_copy(dfs_thread, src, dst, file_buf_size, pdata->resume);
+        } else
+#endif
+        rc = axl_file_copy(src, dst, file_buf_size, pdata->resume);
         AXL_DBG(2, "%s: Read and copied %s to %s, rc %d",
             __func__, src, dst, rc);
 
@@ -237,6 +265,10 @@ static void* axl_pthread_func(void* arg)
         pdata->remain -= 1;
         pthread_mutex_unlock(&pdata->lock);
     }
+
+#ifdef AXL_HAVE_DFS
+    axl_dfs_thread_free(dfs_thread);
+#endif
 
     return AXL_SUCCESS;
 }
@@ -278,6 +310,10 @@ static void axl_pthread_free_pdata(struct axl_pthread_data* pdata)
         free(pdata->head);
         pdata->head = work;
     }
+
+#ifdef AXL_HAVE_DFS
+    axl_dfs_xfer_free(pdata->dfs);
+#endif
 
     free(pdata->tid);
     free(pdata);
@@ -365,6 +401,18 @@ static int __axl_pthread_start (int id, int resume)
         return AXL_FAILURE;
     }
     pdata->resume = resume;
+
+#ifdef AXL_HAVE_DFS
+    int xtype = AXL_XFER_NULL;
+    kvtree_util_get_int(file_list, AXL_KEY_XFER_TYPE, &xtype);
+    if (xtype == AXL_XFER_DFS) {
+        pdata->dfs = axl_dfs_xfer_new();
+        if (! pdata->dfs) {
+            axl_pthread_free_pdata(pdata);
+            return AXL_FAILURE;
+        }
+    }
+#endif
 
     axl_pthread_data_add(id, pdata);
 
@@ -478,8 +526,25 @@ int axl_pthread_wait (int id)
     axl_pthread_data_remove(id);
     axl_pthread_free_pdata(pdata);
 
-    /* All threads are now successfully finished */
-    kvtree_util_set_int(file_list, AXL_KEY_STATUS, AXL_STATUS_DEST);
+    /* All threads are now successfully finished, but each recorded its own files' fate */
+    unsigned int failed = 0;
+    const char* first_failed = NULL;
+    kvtree* files = kvtree_get(file_list, AXL_KEY_FILES);
+    kvtree_elem* elem;
+    for (elem = kvtree_elem_first(files); elem != NULL; elem = kvtree_elem_next(elem)) {
+        int file_status;
+        if (kvtree_util_get_int(kvtree_elem_hash(elem), AXL_KEY_FILE_STATUS, &file_status)
+                == KVTREE_SUCCESS && file_status == AXL_STATUS_ERROR) {
+            if (failed++ == 0) {
+                first_failed = kvtree_elem_key(elem);
+            }
+        }
+    }
+    if (failed) {
+        AXL_ERR("Failed to transfer %u of %d files, the first %s",
+            failed, kvtree_size(files), first_failed);
+    }
+    kvtree_util_set_int(file_list, AXL_KEY_STATUS, failed ? AXL_STATUS_ERROR : AXL_STATUS_DEST);
 
     return axl_sync_wait(id);
 }
@@ -491,6 +556,10 @@ int axl_pthread_cancel (int id)
     /* get pointer to pthread struct for this dataset */
     struct axl_pthread_data* pdata = axl_pthread_data_lookup(id);
     assert(pdata);
+
+    pthread_mutex_lock(&pdata->lock);
+    pdata->cancel = 1;
+    pthread_mutex_unlock(&pdata->lock);
 
     int i;
     for (i = 0; i < pdata->threads; i++) {

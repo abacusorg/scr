@@ -4,6 +4,11 @@
 /* pick up cmake compile macros */
 #include "config.h"
 
+/* AXL_XFER_DFS runs on the pthread engine */
+#if defined(HAVE_PTHREADS) && defined(HAVE_DAOS)
+#define AXL_HAVE_DFS
+#endif
+
 #include <zlib.h>
 #include <stdarg.h>
 #include "axl.h"
