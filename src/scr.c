@@ -4099,6 +4099,25 @@ int SCR_Flushing(const char* name, int* flag)
   return SCR_SUCCESS;
 }
 
+int SCR_Flushed(const char* name, int* flag)
+{
+  *flag = -1;
+
+  /* if not enabled, bail with an error */
+  if (! scr_enabled) {
+    return SCR_FAILURE;
+  }
+
+  /* bail out if not initialized -- will get bad results */
+  if (! scr_initialized) {
+    scr_abort(-1, "SCR has not been initialized @ %s:%d", __FILE__, __LINE__);
+    return SCR_FAILURE;
+  }
+
+  *flag = scr_flush_outcome_get(name);
+  return SCR_SUCCESS;
+}
+
 /* copy out cumulative blocking sub-operation timers (seconds since job start).
  * A pure local read of file-static accumulators: no MPI, no state transition, so
  * it is safe to call at any point and cannot perturb the timed collective calls. */

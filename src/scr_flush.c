@@ -495,3 +495,29 @@ int scr_flush_complete(const scr_cache_index* cindex, int id, kvtree* file_list)
 
   return flushed;
 }
+
+/* Kept by name because the flush file forgets a dataset once the cache evicts it, which
+ * can happen before the application next asks. */
+static kvtree* scr_flush_outcomes = NULL;
+
+void scr_flush_outcome_set(const char* name, int flushed)
+{
+  if (name == NULL) {
+    return;
+  }
+  if (scr_flush_outcomes == NULL) {
+    scr_flush_outcomes = kvtree_new();
+  }
+  kvtree_util_set_int(scr_flush_outcomes, name, flushed ? 1 : 0);
+}
+
+int scr_flush_outcome_get(const char* name)
+{
+  int flushed = -1;
+  if (scr_flush_outcomes == NULL || name == NULL ||
+      kvtree_util_get_int(scr_flush_outcomes, name, &flushed) != KVTREE_SUCCESS)
+  {
+    return -1;
+  }
+  return flushed;
+}

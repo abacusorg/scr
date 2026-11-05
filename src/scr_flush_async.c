@@ -547,6 +547,13 @@ int scr_flush_async_complete(scr_cache_index* cindex, int id)
     scr_dataset_delete(&dataset);
   }
 
+  scr_dataset* done = scr_dataset_new();
+  scr_cache_index_get_dataset(cindex, id, done);
+  char* done_name = NULL;
+  scr_dataset_get_name(done, &done_name);
+  scr_flush_outcome_set(done_name, status == SCR_SUCCESS);
+  scr_dataset_delete(&done);
+
   /* remove dset from async_list */
   kvtree_unset_kv_int(scr_flush_async_list, ASYNC_KEY_OUT_DSET, id);
 

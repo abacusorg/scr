@@ -56,4 +56,10 @@ int scr_flush_prepare(const scr_cache_index* cindex, int id, kvtree* file_list);
  * complete the flush by writing the summary file */
 int scr_flush_complete(const scr_cache_index* cindex, int id, kvtree* file_list);
 
+/* record whether the flush of dataset `name` that just finished reached the prefix */
+void scr_flush_outcome_set(const char* name, int flushed);
+
+/* 1 if the last finished flush of `name` reached the prefix, 0 if it failed, -1 if none */
+int scr_flush_outcome_get(const char* name);
+
 #endif

@@ -125,6 +125,10 @@ int SCR_Drop(const char* name);
 /* determine whether the named checkpoint is still flushing to the file system */
 int SCR_Flushing(const char* name, int* flag);
 
+/* the named dataset's last flush in this run: *flag = 1 if it reached the file system,
+ * 0 if it failed, -1 if none has finished.  Local, not collective. */
+int SCR_Flushed(const char* name, int* flag);
+
 /* cumulative wall-clock (seconds) spent in individual blocking sub-operations on
  * the main thread since job start, for application-side timing breakdown.  Values
  * are monotonic totals; the caller snapshots and diffs across an interval to get

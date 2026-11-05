@@ -291,6 +291,8 @@ int scr_flush_sync(scr_cache_index* cindex, int id)
     }
   }
 
+  scr_flush_outcome_set(dset_name, flushed == SCR_SUCCESS);
+
   /* delete the dataset object */
   scr_dataset_delete(&dataset);
 
