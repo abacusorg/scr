@@ -55,7 +55,9 @@ typedef enum {
     AXL_XFER_STATE_FILE,    /* Use the xfer type specified in the state_file. */
     AXL_XFER_DFS,           /* AXL_XFER_PTHREAD, writing a destination under a container
                              * registered with AXL_DFS_Register through libdfs (needs
-                             * ENABLE_DAOS) */
+                             * ENABLE_DAOS).  Such a file has no POSIX path, so it keeps the
+                             * mode, owner and times it was created with, whatever
+                             * AXL_COPY_METADATA says. */
 } axl_xfer_t;
 
 /*

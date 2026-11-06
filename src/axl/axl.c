@@ -1033,6 +1033,13 @@ static int axl_set_metadata(int id)
     while ((elem = axl_get_next_path(id, elem, &src, &dst))) {
         kvtree* src_kvtree = kvtree_elem_hash(elem);
 
+        /* a file whose copy checked its size went through libdfs: no POSIX path to it */
+        int checked = 0;
+        kvtree_util_get_int(src_kvtree, AXL_KEY_FILE_SIZE_CHECKED, &checked);
+        if (checked) {
+            continue;
+        }
+
         int rc = axl_meta_apply(dst, src_kvtree);
         if (rc != AXL_SUCCESS) {
             return rc;
