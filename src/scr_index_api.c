@@ -182,6 +182,19 @@ int scr_index_read(const spath* dir, kvtree* index)
   return rc;
 }
 
+/* 1 if the index file exists in given directory, 0 otherwise */
+int scr_index_exists(const spath* dir)
+{
+  spath* path_index = spath_dup(dir);
+  spath_append_str(path_index, ".scr");
+  spath_append_str(path_index, SCR_INDEX_FILENAME);
+  char* index_file = spath_strdup(path_index);
+  int exists = (scr_file_exists(index_file) == SCR_SUCCESS);
+  scr_free(&index_file);
+  spath_delete(&path_index);
+  return exists;
+}
+
 /* overwrite the contents of the index file in given directory with given hash */
 int scr_index_write(const spath* dir, kvtree* index)
 {

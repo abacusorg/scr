@@ -129,6 +129,10 @@ int SCR_Flushing(const char* name, int* flag);
  * 0 if it failed, -1 if none has finished.  Local, not collective. */
 int SCR_Flushed(const char* name, int* flag);
 
+/* whether the prefix's index holds the named dataset as complete: *flag = 1 if so, 0 if it
+ * holds it incomplete, -1 if it does not name it.  Reads the index file; local, not collective. */
+int SCR_Index_complete(const char* name, int* flag);
+
 /* cumulative wall-clock (seconds) spent in individual blocking sub-operations on
  * the main thread since job start, for application-side timing breakdown.  Values
  * are monotonic totals; the caller snapshots and diffs across an interval to get

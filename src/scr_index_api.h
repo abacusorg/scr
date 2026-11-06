@@ -22,6 +22,9 @@
 /* read the index file from given directory and merge its contents into the given hash */
 int scr_index_read(const spath* dir, kvtree* index);
 
+/* 1 if the index file exists in given directory, 0 otherwise */
+int scr_index_exists(const spath* dir);
+
 /* overwrite the contents of the index file in given directory with given hash */
 int scr_index_write(const spath* dir, kvtree* index);
 

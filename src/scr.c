@@ -4118,6 +4118,38 @@ int SCR_Flushed(const char* name, int* flag)
   return SCR_SUCCESS;
 }
 
+int SCR_Index_complete(const char* name, int* flag)
+{
+  *flag = -1;
+
+  /* if not enabled, bail with an error */
+  if (! scr_enabled) {
+    return SCR_FAILURE;
+  }
+
+  /* bail out if not initialized -- will get bad results */
+  if (! scr_initialized) {
+    scr_abort(-1, "SCR has not been initialized @ %s:%d", __FILE__, __LINE__);
+    return SCR_FAILURE;
+  }
+
+  /* no index yet: no flush has begun */
+  if (! scr_index_exists(scr_prefix_path)) {
+    return SCR_SUCCESS;
+  }
+
+  kvtree* index_hash = kvtree_new();
+  int rc = scr_index_read(scr_prefix_path, index_hash);
+  int id;
+  if (rc == SCR_SUCCESS && scr_index_get_id_by_name(index_hash, name, &id) == SCR_SUCCESS) {
+    int complete = 0;
+    scr_index_get_complete(index_hash, id, name, &complete);
+    *flag = (complete != 0);
+  }
+  kvtree_delete(&index_hash);
+  return rc;
+}
+
 /* copy out cumulative blocking sub-operation timers (seconds since job start).
  * A pure local read of file-static accumulators: no MPI, no state transition, so
  * it is safe to call at any point and cannot perturb the timed collective calls. */
