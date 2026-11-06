@@ -422,10 +422,12 @@ static void axl_dfs_count(
 struct axl_dfs_thread {
     struct axl_dfs_xfer* xfer;
     int usable;          /* 0 sends every file to POSIX */
-    int stuck;           /* an event never completed: its buffer and queue may be in use */
+    int stuck;           /* an event never completed: its buffer, sgl and queue may be in use */
     daos_handle_t eqh;
     daos_event_t ev[2];
     int ev_inited[2];
+    d_iov_t iov[2];      /* DAOS keeps the sgl by pointer until its write completes */
+    d_sg_list_t sgl[2];
     char* buf[2];
     unsigned long buf_size;
 };
@@ -466,19 +468,21 @@ void axl_dfs_thread_free(struct axl_dfs_thread* t)
     if (t == NULL) {
         return;
     }
-    if (! t->stuck) {
-        int i;
-        for (i = 0; i < 2; i++) {
-            if (t->ev_inited[i]) {
-                daos_event_fini(&t->ev[i]);
-            }
-            free(t->buf[i]);
+    /* a stuck write may still reference the events, sgl and buffers, all in here */
+    if (t->stuck) {
+        return;
+    }
+    int i;
+    for (i = 0; i < 2; i++) {
+        if (t->ev_inited[i]) {
+            daos_event_fini(&t->ev[i]);
         }
-        if (daos_handle_is_valid(t->eqh)) {
-            int rc = daos_eq_destroy(t->eqh, 0);
-            if (rc != 0) {
-                AXL_ERR("daos_eq_destroy failed: DER %d", rc);
-            }
+        free(t->buf[i]);
+    }
+    if (daos_handle_is_valid(t->eqh)) {
+        int rc = daos_eq_destroy(t->eqh, 0);
+        if (rc != 0) {
+            AXL_ERR("daos_eq_destroy failed: DER %d", rc);
         }
     }
     free(t);
@@ -587,9 +591,6 @@ int axl_dfs_file_copy(
         off = done;
     }
 
-    /* referenced by DAOS until their writes complete */
-    d_iov_t iov[2];
-    d_sg_list_t sgl[2];
     int inflight[2] = {0, 0};
     unsigned long long bytes = 0;
     int slot = 0;
@@ -613,12 +614,12 @@ int axl_dfs_file_copy(
             break;
         }
 
-        d_iov_set(&iov[slot], t->buf[slot], (size_t) nread);
-        sgl[slot].sg_nr = 1;
-        sgl[slot].sg_nr_out = 0;
-        sgl[slot].sg_iovs = &iov[slot];
+        d_iov_set(&t->iov[slot], t->buf[slot], (size_t) nread);
+        t->sgl[slot].sg_nr = 1;
+        t->sgl[slot].sg_nr_out = 0;
+        t->sgl[slot].sg_iovs = &t->iov[slot];
         /* an error here means the event never launched */
-        err = dfs_write(dfs, obj, &sgl[slot], off, &t->ev[slot]);
+        err = dfs_write(dfs, obj, &t->sgl[slot], off, &t->ev[slot]);
         if (err != 0) {
             AXL_ERR("dfs_write of %s at offset %llu: %s",
                 dst_file, (unsigned long long) off, strerror(err)
